@@ -101,15 +101,37 @@ export function QuizForm({
           <label htmlFor={question.id} className="block font-serif text-lg leading-snug">
             {question.prompt}
           </label>
-          <input
-            id={question.id}
-            name={question.id}
-            type="text"
-            autoComplete="off"
-            value={responses[question.id] ?? ""}
-            onChange={(event) => update(question.id, event.target.value)}
-            className="mt-3 w-full rounded-md border border-line bg-background px-3 py-2 outline-none focus:border-accent"
-          />
+
+          {question.options.length > 0 ? (
+            <div className="mt-3 flex flex-col gap-2">
+              {question.options.map((option) => (
+                <label
+                  key={option}
+                  className="flex cursor-pointer items-start gap-3 rounded-md border border-line px-3 py-2 has-checked:border-accent has-checked:bg-accent/5"
+                >
+                  <input
+                    type="radio"
+                    name={question.id}
+                    value={option}
+                    checked={responses[question.id] === option}
+                    onChange={() => update(question.id, option)}
+                    className="mt-1 accent-accent"
+                  />
+                  <span>{option}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <input
+              id={question.id}
+              name={question.id}
+              type="text"
+              autoComplete="off"
+              value={responses[question.id] ?? ""}
+              onChange={(event) => update(question.id, event.target.value)}
+              className="mt-3 w-full rounded-md border border-line bg-background px-3 py-2 outline-none focus:border-accent"
+            />
+          )}
         </fieldset>
       ))}
 

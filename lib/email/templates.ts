@@ -146,9 +146,12 @@ export interface QuizEmailInput {
 }
 
 /**
- * The quiz email carries the whole quiz: questions, a divider, then answers
- * with explanations. It is readable without clicking anything — the link to the
- * site is for a scored attempt, not for the content.
+ * The quiz email carries the questions and nothing else.
+ *
+ * It used to print the answers under a divider, so it read without clicking
+ * anything. That is wrong once the quiz is taken and scored on the site: the
+ * answers arrive in the same message as the questions, and you cannot help
+ * seeing them. They belong on the result page, after submitting.
  */
 export function quizEmail({
   cadence,
@@ -177,19 +180,15 @@ export function quizEmail({
             : ""
         }`;
       }
-      return `<div style="${CARD_STYLE}"><p style="${LABEL_STYLE}">Question ${index + 1}</p>${imageHtml}<p style="margin:0;">${escapeHtml(question.prompt)}</p></div>`;
-    })
-    .join("");
 
-  const answerBlocks = questions
-    .map(
-      (question, index) =>
-        `<div style="margin:0 0 14px;"><p style="${LABEL_STYLE}">Answer ${index + 1}</p><p style="margin:0;"><strong>${escapeHtml(question.correct_answer)}</strong></p>${
-          question.explanation
-            ? `<p style="${MUTED_STYLE}">${escapeHtml(question.explanation)}</p>`
-            : ""
-        }</div>`,
-    )
+      const optionsHtml = question.options.length
+        ? `<ol type="A" style="margin:10px 0 0;padding-left:22px;color:#3b3833;">${question.options
+            .map((option) => `<li style="margin:0 0 4px;">${escapeHtml(option)}</li>`)
+            .join("")}</ol>`
+        : "";
+
+      return `<div style="${CARD_STYLE}"><p style="${LABEL_STYLE}">Question ${index + 1}</p>${imageHtml}<p style="margin:0;">${escapeHtml(question.prompt)}</p>${optionsHtml}</div>`;
+    })
     .join("");
 
   const title = `${cadence === "weekly" ? "Weekly" : "Monthly"} quiz`;
@@ -198,10 +197,8 @@ export function quizEmail({
     `<h1 style="font-size:24px;margin:0 0 4px;">${title}</h1>
 <p style="font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#6c6862;margin:0 0 20px;">Facts from ${escapeHtml(formatShort(periodStart))} to ${escapeHtml(formatShort(periodEnd))} · ${questions.length} questions</p>
 ${questionBlocks}
-<p style="margin:20px 0;"><a href="${escapeHtml(quizUrl)}" style="${LINK_STYLE}">Take it scored on the site →</a></p>
-<hr style="border:none;border-top:2px solid #e5e1d8;margin:32px 0;" />
-<h2 style="font-size:19px;margin:0 0 16px;">Answers</h2>
-${answerBlocks}`,
+<p style="margin:24px 0 0;"><a href="${escapeHtml(quizUrl)}" style="${LINK_STYLE}">Take it scored on the site →</a></p>
+<p style="font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#6c6862;margin:8px 0 0;">Answers and explanations appear once you have submitted.</p>`,
     footerHtml(siteUrl, unsubscribeUrl),
   );
 
@@ -209,15 +206,15 @@ ${answerBlocks}`,
     title,
     `Facts from ${formatShort(periodStart)} to ${formatShort(periodEnd)}`,
     "",
-    ...questions.map((q, i) => `${i + 1}. ${q.prompt}`),
+    ...questions.map((q, i) => {
+      const options = q.options.length
+        ? `\n${q.options.map((option, n) => `   ${"ABCD"[n] ?? "-"}. ${option}`).join("\n")}`
+        : "";
+      return `${i + 1}. ${q.prompt}${options}`;
+    }),
     "",
     `Take it scored: ${quizUrl}`,
-    "",
-    "--- ANSWERS ---",
-    "",
-    ...questions.map(
-      (q, i) => `${i + 1}. ${q.correct_answer}${q.explanation ? `\n   ${q.explanation}` : ""}`,
-    ),
+    "Answers and explanations appear once you have submitted.",
     "",
     `Unsubscribe: ${unsubscribeUrl}`,
   ].join("\n");

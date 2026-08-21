@@ -11,6 +11,7 @@ export type Cadence = "weekly" | "monthly";
 export type EmailCadence = "daily" | Cadence;
 
 export type QuestionFormat =
+  | "multiple_choice"
   | "open_recall"
   | "fill_blank"
   | "explain_why"
@@ -57,6 +58,8 @@ export type Question = {
   fact_key: string | null;
   format: QuestionFormat;
   prompt: string;
+  /** The choices, for multiple_choice. Empty for every other format. */
+  options: string[];
   correct_answer: string;
   accepted_answers: string[];
   explanation: string | null;
@@ -189,10 +192,11 @@ export type Database = {
       >;
       pqb_questions: Table<
         Question,
-        Omit<Question, "id" | "created_at" | "accepted_answers"> & {
+        Omit<Question, "id" | "created_at" | "accepted_answers" | "options"> & {
           id?: string;
           created_at?: string;
           accepted_answers?: string[];
+          options?: string[];
         }
       >;
       pqb_members: Table<Member, Omit<Member, "created_at"> & { created_at?: string }>;

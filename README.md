@@ -143,6 +143,29 @@ start effectively cold regardless.
 `quiz_config` are read once and never written. After this they are a dead
 archive, and the two `LEGACY_*` variables can be deleted.
 
+## Question formats
+
+Most questions are multiple choice, with four options. The original rule was the
+opposite — no multiple choice anywhere, on the grounds that picking one of four
+does not prove a fact stuck — and it was wrong for one reason: a written answer
+to "why did X happen" cannot be marked by string comparison. The first real
+quiz scored 1/13 on answers that were substantially right.
+
+A question is left as a typed answer only when the answer is a short name,
+place or number: at most `MAX_WRITTEN_ANSWER_WORDS` (4). Anything longer has to
+be multiple choice, and `validateGeneratedQuiz` rejects the quiz otherwise —
+including picture answers. That rule, rather than a count, is what stops the
+harsh marking.
+
+`options` is on `pqb_questions_public`, so clients can see the choices; the
+answer columns stay off it as before. A multiple-choice miss never goes to the
+second-pass marker — the response is one of the options we supplied, so there is
+nothing to interpret.
+
+**The quiz email carries questions only.** It used to print the answers under a
+divider so it read without clicking, which hands them over before you start.
+They appear on the result page after submitting.
+
 ## The two bugs this fixed
 
 - **A shared quiz.** `quiz_sessions.is_active` was the only completion marker,
@@ -164,7 +187,7 @@ archive, and the two `LEGACY_*` variables can be deleted.
 ## Checking it
 
 ```bash
-npm test           # 97 tests, no network
+npm test           # 106 tests, no network
 npm run typecheck
 npm run build
 ```

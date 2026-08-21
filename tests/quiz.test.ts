@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  MAX_WRITTEN_ANSWER_WORDS,
+  QUESTION_FORMATS,
   SPEC,
-  WRITTEN_FORMATS,
   attachPictures,
   type GeneratedPicture,
   type GeneratedQuiz,
@@ -52,13 +53,24 @@ const FACTS: Fact[] = FACT_KEYS.map((key) =>
 function written(index: number, overrides: Partial<GeneratedWritten> = {}): GeneratedWritten {
   return {
     fact_keys: [FACT_KEYS[index % FACT_KEYS.length]],
-    format: WRITTEN_FORMATS[index % WRITTEN_FORMATS.length],
+    format: "multiple_choice",
     prompt: `Question number ${index}?`,
+    options: [`Answer ${index}`, "Something else", "A third thing", "A fourth"],
     correct_answer: `Answer ${index}`,
     accepted_answers: [],
     explanation: "Because.",
     ...overrides,
   };
+}
+
+/** A typed-answer question: short answer, no options. */
+function typed(index: number, overrides: Partial<GeneratedWritten> = {}): GeneratedWritten {
+  return written(index, {
+    format: "open_recall",
+    options: [],
+    correct_answer: `Answer ${index}`,
+    ...overrides,
+  });
 }
 
 function picture(index: number, overrides: Partial<GeneratedPicture> = {}): GeneratedPicture {
@@ -110,7 +122,7 @@ describe("validateGeneratedQuiz", () => {
     );
   });
 
-  it("rejects multiple choice, whatever it is labelled", () => {
+  it("rejects a format that is not one of the allowed ones", () => {
     const quiz = quizFor("weekly");
     quiz.questions[0] = {
       ...quiz.questions[0],
@@ -119,18 +131,6 @@ describe("validateGeneratedQuiz", () => {
 
     expect(() => validate(quiz, "weekly")).toThrow(
       /not one of the allowed formats/,
-    );
-  });
-
-  it("rejects a quiz that leans on one or two formats", () => {
-    const quiz = quizFor("weekly");
-    quiz.questions = quiz.questions.map((question) => ({
-      ...question,
-      format: "open_recall",
-    }));
-
-    expect(() => validate(quiz, "weekly")).toThrow(
-      /at least four of the five/,
     );
   });
 
@@ -166,12 +166,96 @@ describe("validateGeneratedQuiz", () => {
     quiz.questions[0] = {
       ...quiz.questions[0],
       prompt: "Which museum is the Rijksmuseum?",
+      options: ["Rijksmuseum", "The Louvre", "The Prado", "The Uffizi"],
       correct_answer: "Rijksmuseum",
     };
 
     expect(() => validate(quiz, "weekly")).toThrow(
       /contains its own answer/,
     );
+  });
+});
+
+/**
+ * Most questions offer options now. The rule that matters underneath is the one
+ * about typing: a question is only left as a typed answer when the answer is
+ * short enough to type and match exactly. That is what stops a right-in-
+ * substance answer being marked wrong, which is why the change was made.
+ */
+describe("multiple choice", () => {
+  it("insists on enough of them", () => {
+    const quiz = quizFor("weekly");
+    // Turn all but one into short typed answers.
+    quiz.questions = quiz.questions.map((q, i) => (i === 0 ? q : typed(i)));
+
+    expect(() => validate(quiz, "weekly")).toThrow(/at least 7 of the 9 must offer options/);
+  });
+
+  it("allows a typed answer when it is a short name or number", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[7] = typed(7, { correct_answer: "1969" });
+    quiz.questions[8] = typed(8, { correct_answer: "Ada Lovelace" });
+
+    expect(() => validate(quiz, "weekly")).not.toThrow();
+  });
+
+  it("refuses to make someone type a whole clause", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[8] = typed(8, {
+      format: "explain_why",
+      correct_answer:
+        "Young Tom Morris had won three in a row so kept the belt outright",
+    });
+
+    expect(() => validate(quiz, "weekly")).toThrow(/more than 4 words/);
+  });
+
+  it("holds picture answers to the same rule", () => {
+    const quiz = quizFor("weekly");
+    quiz.pictures[0].correct_answer = "The Wollemi pine, found by David Noble";
+
+    expect(() => validate(quiz, "weekly")).toThrow(/more than 4 words/);
+  });
+
+  it("wants exactly four options", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[0].options = ["One", "Two", "Answer 0"];
+
+    expect(() => validate(quiz, "weekly")).toThrow(/has 3 options/);
+  });
+
+  it("rejects a question whose answer is not among its options", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[0].correct_answer = "Something not offered";
+
+    expect(() => validate(quiz, "weekly")).toThrow(/not one of its options/);
+  });
+
+  it("rejects a repeated option, however it is spelled", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[0].options = ["Answer 0", "answer 0!", "A third thing", "A fourth"];
+
+    expect(() => validate(quiz, "weekly")).toThrow(/repeats an option/);
+  });
+
+  it("rejects all of the above", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[0].options = ["Answer 0", "Two", "Three", "All of the above"];
+
+    expect(() => validate(quiz, "weekly")).toThrow(/every option must be a real answer/);
+  });
+
+  it("does not let a typed question carry options", () => {
+    const quiz = quizFor("weekly");
+    quiz.questions[8] = typed(8, { options: ["a", "b", "c", "d"] });
+
+    expect(() => validate(quiz, "weekly")).toThrow(/carries options/);
+  });
+
+  it("keeps every format in the allowed set", () => {
+    expect(QUESTION_FORMATS).toContain("multiple_choice");
+    expect(QUESTION_FORMATS).not.toContain("picture");
+    expect(MAX_WRITTEN_ANSWER_WORDS).toBe(4);
   });
 });
 

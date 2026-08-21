@@ -59,7 +59,7 @@ export async function POST(
 
   const { data: questions, error: questionsError } = await db
     .from("pqb_questions")
-    .select("id, prompt, correct_answer, accepted_answers, explanation, position")
+    .select("id, prompt, options, correct_answer, accepted_answers, explanation, position")
     .eq("quiz_id", quizId)
     .order("position");
   if (questionsError) throw questionsError;
@@ -102,20 +102,26 @@ export async function POST(
 
   const exact = gradeAttempt(questions, responses);
 
-  // Exact matching can't mark an "explain why" answer — the expected answer is
-  // a whole clause, and nobody phrases it the same way twice. Anything it
-  // rejected gets read for meaning before the score is final.
-  const pending = needsReview(exact).map((answer) => {
-    const question = questions.find((q) => q.id === answer.question_id)!;
-    return {
+  // Exact matching can't always mark a typed answer — a name spelled a little
+  // differently, or the right idea in different words. Anything it rejected
+  // gets read for meaning before the score is final.
+  //
+  // Multiple choice is excluded: the response is one of the options we gave, so
+  // a miss is a miss and there is nothing to interpret.
+  const pending = needsReview(exact)
+    .map((answer) => {
+      const question = questions.find((q) => q.id === answer.question_id)!;
+      return { question, response: answer.response };
+    })
+    .filter(({ question }) => question.options.length === 0)
+    .map(({ question, response }) => ({
       question_id: question.id,
       prompt: question.prompt,
       expected: question.correct_answer,
       accepted: question.accepted_answers,
       explanation: question.explanation,
-      response: answer.response,
-    };
-  });
+      response,
+    }));
 
   const graded = applyVerdicts(exact, await markFreeText(pending));
 

@@ -1,18 +1,27 @@
 import { generateJson } from "@/lib/claude";
 import { addDays, endOfMonth, formatLong, startOfMonth } from "@/lib/dates";
+import { normalise } from "@/lib/grader";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Cadence, Fact, Quiz } from "@/lib/types";
 
 /**
  * Quiz assembly.
  *
- * Two rules matter more than the rest: no multiple choice anywhere, and
- * publishing a quiz is entirely separate from anybody attempting it. A quiz row
- * is never touched by a player.
+ * The rule that matters most: publishing a quiz is entirely separate from
+ * anybody attempting it. A quiz row is never touched by a player.
+ *
+ * Most questions are multiple choice. The original rule was the opposite — no
+ * multiple choice anywhere, on the grounds that picking one of four does not
+ * prove a fact stuck — but a written answer to "why did X happen" cannot be
+ * marked by string comparison, and a quiz that scores 1/13 on answers that were
+ * substantially right is worse than one that is a little easier to guess. A
+ * written answer is kept only where the answer is a short name or number, which
+ * is enforced below: anything longer has to be multiple choice instead.
  */
 
-/** Written formats. `picture` is handled separately; legacy formats are archive. */
-export const WRITTEN_FORMATS = [
+/** `picture` is handled separately; legacy formats are archive. */
+export const QUESTION_FORMATS = [
+  "multiple_choice",
   "open_recall",
   "fill_blank",
   "explain_why",
@@ -20,24 +29,35 @@ export const WRITTEN_FORMATS = [
   "reverse",
 ] as const;
 
+/** How many words a written answer may run to before it has to be a choice. */
+export const MAX_WRITTEN_ANSWER_WORDS = 4;
+
+export function wordCount(value: string): number {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
 export interface CadenceSpec {
   writtenCount: number;
   pictureCount: number;
   crossFactMinimum: number;
+  /** The floor, not the target: more multiple choice than this is fine. */
+  multipleChoiceMinimum: number;
 }
 
 export const SPEC: Record<Cadence, CadenceSpec> = {
-  // 9 written + 4 pictures = 13, inside the 10-15 the weekly quiz wants.
+  // 9 questions + 4 pictures = 13, inside the 10-15 the weekly quiz wants.
   weekly: {
     writtenCount: 9,
     pictureCount: 4,
     crossFactMinimum: 0,
+    multipleChoiceMinimum: 7,
   },
-  // 15 written + 5 pictures = 20.
+  // 15 questions + 5 pictures = 20.
   monthly: {
     writtenCount: 15,
     pictureCount: 5,
     crossFactMinimum: 3,
+    multipleChoiceMinimum: 12,
   },
 };
 
@@ -58,8 +78,9 @@ export function specFor(cadence: Cadence, illustratedFacts: number): CadenceSpec
 
 export interface GeneratedWritten {
   fact_keys: string[];
-  format: (typeof WRITTEN_FORMATS)[number];
+  format: (typeof QUESTION_FORMATS)[number];
   prompt: string;
+  options: string[];
   correct_answer: string;
   accepted_answers: string[];
   explanation: string;
@@ -82,7 +103,7 @@ const ANSWER_PROPS = {
   correct_answer: {
     type: "string",
     description:
-      "The expected answer, as briefly as it can be stated. For explain_why and explain_significance this is the key point on its own, in a few words — not a full sentence of reasoning. Put the reasoning in explanation instead.",
+      "The expected answer, as briefly as it can be stated. For multiple_choice it must match one of the options word for word. For anything else it must be at most four words — a name, a number, a place — because it has to be typed and matched exactly.",
   },
   accepted_answers: {
     type: "array",
@@ -111,14 +132,21 @@ function schemaFor(factKeys: string[], illustratedKeys: string[]) {
               description:
                 "The fact or facts this question tests. Two entries means it connects two separate facts.",
             },
-            format: { type: "string", enum: [...WRITTEN_FORMATS] },
+            format: { type: "string", enum: [...QUESTION_FORMATS] },
             prompt: { type: "string" },
+            options: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "For multiple_choice, exactly four choices, one of which is correct_answer word for word. An empty array for every other format.",
+            },
             ...ANSWER_PROPS,
           },
           required: [
             "fact_keys",
             "format",
             "prompt",
+            "options",
             "correct_answer",
             "accepted_answers",
             "explanation",
@@ -160,37 +188,57 @@ const SYSTEM = `You set pub quizzes for two people from facts they have already 
 The point is recall — whether the fact stuck — not whether they can guess.
 
 Absolute rules:
-- Never write a multiple-choice question. No options, no "which of the following".
 - Every question must be answerable from the facts supplied, and must have one
   clear answer a person would either know or not.
 - Never give the answer away inside the prompt.
 
+Most questions are multiple choice. A question may only be answered in writing
+when the answer is a short name, place or number — at most four words, typed
+from memory and matched exactly. Anything longer, and especially any answer that
+is a reason or an explanation, must be multiple choice instead. A person who has
+the right idea but phrases it differently would otherwise be marked wrong, which
+is worse than making the question a little easier.
+
 The formats:
-- open_recall — straight question about the fact.
+- multiple_choice — four options, exactly one right. Use this for anything whose
+  answer is a reason, a cause, an explanation or a phrase.
+- open_recall — straight question, answer typed. Short names and numbers only.
 - fill_blank — a sentence from the fact with one telling word or number removed,
   written with "____" where the answer goes.
-- explain_why — asks for the reason behind something.
-- explain_significance — asks what made it matter.
+- explain_why — asks for the reason behind something. Must be multiple_choice.
+- explain_significance — asks what made it matter. Must be multiple_choice.
 - reverse — gives the detail and asks what it belongs to.
 
-Use several different formats; do not lean on one.
+Writing the options:
+- Exactly four, and only one defensibly right. If two could be argued for, the
+  question is wrong.
+- The wrong three must be plausible: the same kind of thing as the answer, the
+  same sort of length, and drawn from the same world. "It was cheaper" against
+  "a badger ate it" gives the game away.
+- Do not order them so the answer stands out — it should not always be the
+  longest, the most specific or the most reasonable-sounding.
+- Never "all of the above", "none of the above", or two options that mean the
+  same thing.
+- "options" must be empty for every format except multiple_choice.
 
-"accepted_answers" is where you are generous. Include shortened forms, common
-alternative spellings, with and without "the", surname alone where a full name is
-the answer. Anything a reasonable person might type has to be listed.
+"accepted_answers" is where you are generous, and it applies to the typed
+formats. Include shortened forms, common alternative spellings, with and without
+"the", surname alone where a full name is the answer. Anything a reasonable
+person might type has to be listed. For multiple_choice it can be empty.
 
-Keep "correct_answer" short enough that someone could plausibly type it. For
-explain_why and explain_significance especially, it is the point itself — "the
-belt had been won outright" — not a sentence explaining the whole situation. The
-full picture belongs in "explanation", which is only shown after marking.
+"explanation" is shown only after marking, so it carries the full picture — the
+reasoning, the context, the detail the question could not hold.
 
 Picture questions work differently. Each one is built on a fact that went out
 with a picture attached, and that same picture is shown above the question — the
 players have seen it before, in the briefing, next to the fact. Write the prompt
 as though the picture is in front of them: "This is the ____ that ___?" or
-"Which ___ is this, and what ___?". Never name the subject in the prompt if the
-subject is the answer — the picture is the clue. Only the facts listed as
-illustrated can be used, and each one at most once.
+"Which ___ is this?". Never name the subject in the prompt if the subject is the
+answer — the picture is the clue. Only the facts listed as illustrated can be
+used, and each one at most once.
+
+Picture answers are typed, so they follow the same rule as the other typed
+formats: a short name, at most four words. Ask one thing, not two.
 
 British spelling throughout.`;
 
@@ -247,18 +295,62 @@ export function validateGeneratedQuiz(
     throw new Error(`"${duplicate}" is used for two picture questions; use each once`);
   }
 
-  const notWritten = value.questions.find(
-    (question) => !WRITTEN_FORMATS.includes(question.format),
+  const notAllowed = value.questions.find(
+    (question) => !QUESTION_FORMATS.includes(question.format),
   );
-  if (notWritten) {
-    throw new Error(`"${notWritten.format}" is not one of the allowed formats`);
+  if (notAllowed) {
+    throw new Error(`"${notAllowed.format}" is not one of the allowed formats`);
   }
 
-  const formats = new Set(value.questions.map((q) => q.format));
-  if (formats.size < 4) {
+  const choices = value.questions.filter((q) => q.format === "multiple_choice");
+  if (choices.length < spec.multipleChoiceMinimum) {
     throw new Error(
-      `only ${formats.size} question formats used; use at least four of the five`,
+      `only ${choices.length} multiple-choice questions; at least ${spec.multipleChoiceMinimum} of the ${spec.writtenCount} must offer options`,
     );
+  }
+
+  for (const question of choices) {
+    if (question.options.length !== 4) {
+      throw new Error(
+        `"${question.prompt}" has ${question.options.length} options; give exactly four`,
+      );
+    }
+    const distinct = new Set(question.options.map((option) => normalise(option)));
+    if (distinct.size !== question.options.length) {
+      throw new Error(`"${question.prompt}" repeats an option`);
+    }
+    if (!distinct.has(normalise(question.correct_answer))) {
+      throw new Error(
+        `"${question.prompt}" has a correct_answer that is not one of its options`,
+      );
+    }
+    const lazy = question.options.find((option) =>
+      /^(all|none) of the above$/i.test(option.trim()),
+    );
+    if (lazy) {
+      throw new Error(`"${question.prompt}" uses "${lazy}"; every option must be a real answer`);
+    }
+  }
+
+  // The whole point of the multiple-choice change: a typed answer has to be
+  // something a person can actually type and have matched exactly.
+  const typed = [...value.questions, ...value.pictures].filter(
+    (q) => !("format" in q) || q.format !== "multiple_choice",
+  );
+  const wordy = typed.find(
+    (q) => wordCount(q.correct_answer) > MAX_WRITTEN_ANSWER_WORDS,
+  );
+  if (wordy) {
+    throw new Error(
+      `"${wordy.prompt}" expects "${wordy.correct_answer}" to be typed, which is more than ${MAX_WRITTEN_ANSWER_WORDS} words — make it multiple_choice or ask something shorter`,
+    );
+  }
+
+  const strayOptions = value.questions.find(
+    (q) => q.format !== "multiple_choice" && q.options.length > 0,
+  );
+  if (strayOptions) {
+    throw new Error(`"${strayOptions.prompt}" is ${strayOptions.format} but carries options`);
   }
 
   const crossFact = value.questions.filter((q) => q.fact_keys.length >= 2).length;
@@ -315,7 +407,9 @@ ${illustratedKeys.map((key) => `- ${key}`).join("\n")}`
 
 ${factBrief(facts)}
 
-Write exactly ${spec.writtenCount} written questions.
+Write exactly ${spec.writtenCount} questions, of which at least
+${spec.multipleChoiceMinimum} must be multiple_choice. Leave a question as a typed
+answer only where that answer is a short name, place or number.
 
 ${pictureInstruction}${monthlyExtra}`;
 
@@ -420,6 +514,7 @@ export async function publishQuiz(
       fact_key: question.fact_keys[0] ?? null,
       format: question.format,
       prompt: question.prompt,
+      options: question.format === "multiple_choice" ? question.options : [],
       correct_answer: question.correct_answer,
       accepted_answers: question.accepted_answers,
       explanation: question.explanation,
@@ -432,6 +527,7 @@ export async function publishQuiz(
       fact_key: picture.fact_key,
       format: "picture" as const,
       prompt: picture.prompt,
+      options: [],
       correct_answer: picture.correct_answer,
       accepted_answers: picture.accepted_answers,
       explanation: picture.explanation,

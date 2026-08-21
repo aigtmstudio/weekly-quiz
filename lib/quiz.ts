@@ -29,6 +29,34 @@ export const QUESTION_FORMATS = [
   "reverse",
 ] as const;
 
+/**
+ * Put the options in a random order.
+ *
+ * The model writes `correct_answer` first and then lists the options starting
+ * with it — every one of the first quiz's seven multiple-choice questions had
+ * the answer in slot A, despite being told not to make it stand out. Order is
+ * mechanical, so it is settled here rather than asked for: no prompt wording
+ * makes this reliable.
+ *
+ * `random` is injectable so tests are deterministic.
+ */
+export function shuffle<T>(items: readonly T[], random: () => number = Math.random): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/** The options as they will be stored: shuffled, and empty unless it is a choice. */
+export function optionsFor(
+  question: Pick<GeneratedWritten, "format" | "options">,
+  random: () => number = Math.random,
+): string[] {
+  return question.format === "multiple_choice" ? shuffle(question.options, random) : [];
+}
+
 /** How many words a written answer may run to before it has to be a choice. */
 export const MAX_WRITTEN_ANSWER_WORDS = 4;
 
@@ -218,8 +246,10 @@ Writing the options:
 - The wrong three must be plausible: the same kind of thing as the answer, the
   same sort of length, and drawn from the same world. "It was cheaper" against
   "a badger ate it" gives the game away.
-- Do not order them so the answer stands out — it should not always be the
-  longest, the most specific or the most reasonable-sounding.
+- The options are shuffled before anyone sees them, so their order here does not
+  matter. What does matter is that the right one is not recognisable on sight:
+  it must not be the longest, the most specific, the most cautiously worded or
+  the only one that sounds like a real explanation.
 - Never "all of the above", "none of the above", or two options that mean the
   same thing.
 - "options" must be empty for every format except multiple_choice.
@@ -522,7 +552,7 @@ export async function publishQuiz(
       fact_key: question.fact_keys[0] ?? null,
       format: question.format,
       prompt: question.prompt,
-      options: question.format === "multiple_choice" ? question.options : [],
+      options: optionsFor(question),
       correct_answer: question.correct_answer,
       accepted_answers: question.accepted_answers,
       explanation: question.explanation,

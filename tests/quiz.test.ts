@@ -5,6 +5,8 @@ import {
   QUESTION_FORMATS,
   SPEC,
   attachPictures,
+  optionsFor,
+  shuffle,
   type GeneratedPicture,
   type GeneratedQuiz,
   type GeneratedWritten,
@@ -256,6 +258,51 @@ describe("multiple choice", () => {
     expect(QUESTION_FORMATS).toContain("multiple_choice");
     expect(QUESTION_FORMATS).not.toContain("picture");
     expect(MAX_WRITTEN_ANSWER_WORDS).toBe(4);
+  });
+});
+
+/**
+ * Every multiple-choice question in the first quiz had its answer as option A —
+ * the model lists correct_answer first whatever the prompt says. Order is
+ * settled in code for that reason, so these tests are the guarantee.
+ */
+describe("option order", () => {
+  /** A cycling generator: deterministic, and not a constant. */
+  function rng(seed = 0) {
+    let n = seed;
+    return () => {
+      n = (n * 9301 + 49297) % 233280;
+      return n / 233280;
+    };
+  }
+
+  it("does not leave the answer in the same slot every time", () => {
+    const random = rng(7);
+    const slots = Array.from({ length: 20 }, (_, i) =>
+      optionsFor(written(i), random).indexOf(`Answer ${i}`),
+    );
+
+    expect(new Set(slots).size).toBeGreaterThan(1);
+    expect(slots.every((slot) => slot === 0)).toBe(false);
+  });
+
+  it("keeps every option, and the answer among them", () => {
+    const question = written(1);
+    const shuffled = optionsFor(question, rng(3));
+
+    expect([...shuffled].sort()).toEqual([...question.options].sort());
+    expect(shuffled).toContain(question.correct_answer);
+  });
+
+  it("leaves typed questions with no options at all", () => {
+    expect(optionsFor(typed(1))).toEqual([]);
+  });
+
+  it("does not mutate what it was given", () => {
+    const original = ["a", "b", "c", "d"];
+    shuffle(original, rng(11));
+
+    expect(original).toEqual(["a", "b", "c", "d"]);
   });
 });
 

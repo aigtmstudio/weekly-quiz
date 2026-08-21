@@ -157,6 +157,14 @@ be multiple choice, and `validateGeneratedQuiz` rejects the quiz otherwise —
 including picture answers. That rule, rather than a count, is what stops the
 harsh marking.
 
+**Option order is settled in code, not asked for.** The model writes
+`correct_answer` first and lists the options starting with it: all seven
+multiple-choice questions in the first quiz had the answer as option A, despite
+the prompt saying not to make it stand out. `optionsFor` shuffles before the
+insert. The prompt now only has to make the wrong options indistinguishable in
+kind — the same length, specificity and register — which is the part wording
+can actually influence.
+
 `options` is on `pqb_questions_public`, so clients can see the choices; the
 answer columns stay off it as before. A multiple-choice miss never goes to the
 second-pass marker — the response is one of the options we supplied, so there is
@@ -187,7 +195,7 @@ They appear on the result page after submitting.
 ## Checking it
 
 ```bash
-npm test           # 106 tests, no network
+npm test           # 110 tests, no network
 npm run typecheck
 npm run build
 ```

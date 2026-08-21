@@ -60,6 +60,10 @@ export function isMonday(date: string): boolean {
   return weekday(date) === 1;
 }
 
+export function isFriday(date: string): boolean {
+  return weekday(date) === 5;
+}
+
 export function isFirstOfMonth(date: string): boolean {
   return date.endsWith("-01");
 }

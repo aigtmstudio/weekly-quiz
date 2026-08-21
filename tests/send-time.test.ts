@@ -1,31 +1,32 @@
 import { describe, expect, it } from "vitest";
 
 import { londonHour } from "@/lib/dates";
-import { SEND_HOUR } from "@/lib/email/dispatch";
+import { SEND_HOURS, SEND_HOUR, type EmailKind } from "@/lib/email/dispatch";
 
 /**
- * The email is meant to arrive at 6am London. Vercel crons are UTC-only, so
- * that hour moves relative to the schedule twice a year. The cron fires at both
- * 05:00 and 06:00 UTC (`0 5,6 * * *`) and the route drops whichever is too early.
+ * The briefing is meant to arrive at 6am London and the quizzes at 8am. Vercel
+ * crons are UTC-only, so both hours move relative to the schedule twice a year.
+ * The cron fires at 05:00, 06:00, 07:00 and 08:00 UTC (`0 5,6,7,8 * * *`) and
+ * the route sends only what each firing's London hour has reached.
  *
  * These tests pin the behaviour on both sides of the clock change, because the
  * failure is silent and seasonal: you would not notice until late October, and
  * then only by being emailed an hour early every morning.
  */
 
-/** The hours `0 5,6 * * *` fires at. Keep in step with vercel.json. */
-const CRON_HOURS_UTC = [5, 6];
+/** The hours `0 5,6,7,8 * * *` fires at. Keep in step with vercel.json. */
+const CRON_HOURS_UTC = [5, 6, 7, 8];
 
 /** What the route decides for a given moment. */
-function wouldSend(utc: string): boolean {
-  return londonHour(new Date(utc)) >= SEND_HOUR;
+function wouldSend(utc: string, kind: EmailKind = "daily"): boolean {
+  return londonHour(new Date(utc)) >= SEND_HOURS[kind];
 }
 
-/** The first booked cron of the day that actually sends, in London time. */
-function firstSendHour(date: string): number | null {
+/** The first booked cron of the day that sends this kind, in London time. */
+function firstSendHour(date: string, kind: EmailKind = "daily"): number | null {
   for (const hour of CRON_HOURS_UTC) {
     const at = `${date}T${String(hour).padStart(2, "0")}:00:00Z`;
-    if (wouldSend(at)) return londonHour(new Date(at));
+    if (wouldSend(at, kind)) return londonHour(new Date(at));
   }
   return null;
 }
@@ -85,5 +86,44 @@ describe("the 6am send survives the clock change", () => {
 
   it("lets the early cron through in summer, so the later one is a no-op", () => {
     expect(wouldSend("2026-08-12T05:00:00Z")).toBe(true);
+  });
+});
+
+/**
+ * The quiz goes out two hours after the briefing. The trap is that the same
+ * cron fires for both: a firing that is late enough for the briefing is not
+ * necessarily late enough for the quiz, and one that sends the quiz must not
+ * have been the day's only chance to send the briefing.
+ */
+describe("the 8am quiz send", () => {
+  it("waits until 8am, not 6am", () => {
+    expect(wouldSend("2026-08-28T05:00:00Z", "quiz")).toBe(false); // 6am BST
+    expect(wouldSend("2026-08-28T06:00:00Z", "quiz")).toBe(false); // 7am BST
+    expect(wouldSend("2026-08-28T07:00:00Z", "quiz")).toBe(true); // 8am BST
+  });
+
+  it("lands at 8am on both sides of the clock change", () => {
+    expect(firstSendHour("2026-08-28", "quiz")).toBe(SEND_HOURS.quiz);
+    expect(firstSendHour("2026-12-11", "quiz")).toBe(SEND_HOURS.quiz);
+    expect(firstSendHour("2026-10-24", "quiz")).toBe(SEND_HOURS.quiz);
+    expect(firstSendHour("2026-10-26", "quiz")).toBe(SEND_HOURS.quiz);
+  });
+
+  it("books a send for both waves every day of the year", () => {
+    const start = new Date("2026-01-01T00:00:00Z");
+    for (let day = 0; day < 365; day++) {
+      const d = new Date(start);
+      d.setUTCDate(d.getUTCDate() + day);
+      const date = d.toISOString().slice(0, 10);
+
+      expect(firstSendHour(date, "daily"), `no briefing booked on ${date}`).toBe(
+        SEND_HOURS.daily,
+      );
+      expect(firstSendHour(date, "quiz"), `no quiz booked on ${date}`).toBe(SEND_HOURS.quiz);
+    }
+  });
+
+  it("arrives after the briefing, never with it", () => {
+    expect(SEND_HOURS.quiz).toBeGreaterThan(SEND_HOURS.daily);
   });
 });

@@ -16,12 +16,24 @@ import type { Cadence, EmailCadence, Fact, Preferences, Question, Quiz } from "@
  */
 
 /**
- * Nothing goes out before this hour, London time.
+ * When each kind of email goes out, London time. Nothing is sent before its
+ * hour, and the cron in vercel.json must fire at every one of them — under both
+ * BST and GMT, which is why it lists four UTC hours for two London ones.
  *
  * Lives here rather than in the route so it can be tested without dragging in
- * next/server, and so the schedule in vercel.json has one thing to agree with.
+ * next/server, and so the schedule has one thing to agree with.
  */
-export const SEND_HOUR = 6;
+export const SEND_HOURS = {
+  /** The daily briefing: a two-minute read over breakfast. */
+  daily: 6,
+  /** Weekly and monthly quizzes, two hours later so they don't arrive together. */
+  quiz: 8,
+} as const;
+
+export type EmailKind = keyof typeof SEND_HOURS;
+
+/** Kept for the daily briefing's own send hour. */
+export const SEND_HOUR = SEND_HOURS.daily;
 
 interface Recipient {
   user_id: string;
@@ -102,7 +114,14 @@ export interface DispatchSummary {
   failures: string[];
 }
 
-export async function dispatchEmail(date: string): Promise<DispatchSummary> {
+/**
+ * Send what is due. `kinds` narrows it to one wave, so the 6am run sends the
+ * briefing and the 8am run sends the quiz.
+ */
+export async function dispatchEmail(
+  date: string,
+  kinds: readonly EmailKind[] = ["daily", "quiz"],
+): Promise<DispatchSummary> {
   const db = createAdminClient();
   const people = await recipients();
   const summary: DispatchSummary = { daily: 0, weekly: 0, monthly: 0, failures: [] };
@@ -123,7 +142,7 @@ export async function dispatchEmail(date: string): Promise<DispatchSummary> {
   const site = siteUrl();
 
   for (const person of people) {
-    if (facts && facts.length > 0 && wants(person, "daily")) {
+    if (kinds.includes("daily") && facts && facts.length > 0 && wants(person, "daily")) {
       try {
         const sent = await sendOnce(person, "daily", date, async () =>
           dailyEmail({
@@ -140,7 +159,7 @@ export async function dispatchEmail(date: string): Promise<DispatchSummary> {
       }
     }
 
-    for (const quiz of (quizzes ?? []) as Quiz[]) {
+    for (const quiz of (kinds.includes("quiz") ? ((quizzes ?? []) as Quiz[]) : [])) {
       const cadence = quiz.cadence as Cadence;
       if (!wants(person, cadence)) continue;
 

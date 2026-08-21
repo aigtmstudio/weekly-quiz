@@ -13,14 +13,14 @@ in the scheduled path needs approving.
 
 ## How it runs
 
-Three daily crons, staggered two hours apart so Vercel's ±59 minutes of
-scheduling imprecision can't reorder them. Each gets its own 300-second budget.
+Three daily crons, staggered so Vercel's ±59 minutes of scheduling imprecision
+can't reorder them. Each gets its own 300-second budget.
 
 | Cron | Time (UTC) | What it does |
 |---|---|---|
 | `/api/cron/facts` | `0 1,2 * * *` | Eight facts for today, topics rotated |
-| `/api/cron/quizzes` | `0 3,4 * * *` | Self-gating: weekly on Mondays, monthly on the 1st |
-| `/api/cron/email` | `0 5,6 * * *` | Sends whatever is due, at 6am London |
+| `/api/cron/quizzes` | `0 3,4 * * *` | Self-gating: weekly on Fridays, monthly on the 1st |
+| `/api/cron/email` | `0 5,6,7,8 * * *` | Briefing at 6am London, quizzes at 8am |
 
 Facts and quizzes fire twice an hour apart because the model call can fail and
 `runOnce` retakes a run that errored. On 15 August 2026 the facts job hit an
@@ -28,11 +28,21 @@ Facts and quizzes fire twice an hour apart because the model call can fail and
 retry it — no facts that day, and an email that went out empty. The second
 firing costs nothing when the first succeeded: it reports `skipped` and stops.
 
-The email fires at two hours for a different reason. Vercel crons are UTC-only, so 6am
-London is 05:00 UTC under BST and 06:00 UTC under GMT. Both fire and the route
-drops whichever is before `SEND_HOUR` in London — returning *before* the
-`pqb_job_runs` guard, so the later one is still free to do the work. Without
-that, the daily email would silently arrive at 5am for five months of the year.
+The email fires at four hours for a different reason. There are two sends a day —
+the briefing at 6am London, quizzes at 8am — and Vercel crons are UTC-only, so
+each London hour is two UTC hours depending on the season. 6am is 05:00 UTC
+under BST and 06:00 under GMT; 8am is 07:00 and 08:00. All four fire, and each
+run sends only the waves whose hour has come round, returning *before* the
+`pqb_job_runs` guard when none has. Without that, the daily email would silently
+arrive at 5am for five months of the year.
+
+**The guard is per wave, not per day.** `email-daily` and `email-quiz` are
+separate job keys, because a single `email` key would mean the 6am briefing
+recorded the day as done and the 8am quiz never went out.
+
+The weekly quiz is built on a Friday morning and emailed at 8am the same day,
+covering the seven days up to Thursday. `periodFor` works off the seven days
+before the run, so nothing but the day check in the cron knows about Fridays.
 
 **It has to be one entry with two hours, not two entries.** Vercel keys cron
 jobs by path, so two `{ "path": "/api/cron/email" }` entries are silently
@@ -154,7 +164,7 @@ archive, and the two `LEGACY_*` variables can be deleted.
 ## Checking it
 
 ```bash
-npm test           # 92 tests, no network
+npm test           # 97 tests, no network
 npm run typecheck
 npm run build
 ```

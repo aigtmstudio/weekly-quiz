@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { addDays, isFirstOfMonth, isMonday, monthKey, weekKey } from "@/lib/dates";
+import { addDays, isFirstOfMonth, isFriday, monthKey, weekKey } from "@/lib/dates";
 import {
   FACTS_PER_DAY,
   FACT_IMAGE_FOLDER,
@@ -12,6 +12,7 @@ import {
   storeFactImages,
   topicsForDate,
 } from "@/lib/facts";
+import { periodFor } from "@/lib/quiz";
 import { ImageError } from "@/lib/images";
 
 const resting = (date: string) => TOPICS.filter((t) => !topicsForDate(date).includes(t));
@@ -114,10 +115,18 @@ describe("assignFactKeys", () => {
 
 describe("scheduling", () => {
   it("knows which days a quiz is due", () => {
-    expect(isMonday("2026-08-10")).toBe(true);
-    expect(isMonday("2026-08-11")).toBe(false);
+    // The weekly quiz is built on a Friday, the monthly on the 1st.
+    expect(isFriday("2026-08-28")).toBe(true);
+    expect(isFriday("2026-08-24")).toBe(false);
     expect(isFirstOfMonth("2026-08-01")).toBe(true);
     expect(isFirstOfMonth("2026-08-02")).toBe(false);
+  });
+
+  it("covers the seven days up to Thursday when built on a Friday", () => {
+    expect(periodFor("weekly", "2026-08-28")).toEqual({
+      start: "2026-08-21",
+      end: "2026-08-27",
+    });
   });
 
   it("gives every day of a week the same weekly key", () => {

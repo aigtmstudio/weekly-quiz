@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { isFirstOfMonth, isMonday, monthKey, today, weekKey } from "@/lib/dates";
+import { isFirstOfMonth, isFriday, monthKey, today, weekKey } from "@/lib/dates";
 import { isAuthorisedCron, runOnce, type JobResult } from "@/lib/jobs";
 import { publishQuiz, SPEC } from "@/lib/quiz";
 import type { Cadence } from "@/lib/types";
@@ -10,8 +10,12 @@ export const maxDuration = 300;
 
 /**
  * Runs every day and decides for itself whether anything is due: a weekly quiz
- * on Mondays, a monthly quiz on the 1st. On the 1st of a month that falls on a
- * Monday, both.
+ * on Fridays, a monthly quiz on the 1st. On the 1st of a month that falls on a
+ * Friday, both.
+ *
+ * Built at 04:00 so it is ready well before the 08:00 email. `periodFor` works
+ * off the seven days before the run, so a Friday build covers Friday to
+ * Thursday without anything here needing to know the day of the week.
  */
 export async function GET(request: Request) {
   if (!isAuthorisedCron(request)) {
@@ -21,7 +25,7 @@ export async function GET(request: Request) {
   const date = today();
 
   const due: Array<{ cadence: Cadence; periodKey: string }> = [];
-  if (isMonday(date)) due.push({ cadence: "weekly", periodKey: weekKey(date) });
+  if (isFriday(date)) due.push({ cadence: "weekly", periodKey: weekKey(date) });
   if (isFirstOfMonth(date)) due.push({ cadence: "monthly", periodKey: monthKey(date) });
 
   // ?force=weekly|monthly builds one now, whatever day it is. Without this the

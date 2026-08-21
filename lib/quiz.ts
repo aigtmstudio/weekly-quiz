@@ -192,12 +192,15 @@ Absolute rules:
   clear answer a person would either know or not.
 - Never give the answer away inside the prompt.
 
-Most questions are multiple choice. A question may only be answered in writing
-when the answer is a short name, place or number — at most four words, typed
-from memory and matched exactly. Anything longer, and especially any answer that
-is a reason or an explanation, must be multiple choice instead. A person who has
-the right idea but phrases it differently would otherwise be marked wrong, which
-is worse than making the question a little easier.
+Most questions are multiple choice, and the request will say exactly how many.
+Hit that number exactly; it matters more than the variety of the rest.
+
+A question may only be answered in writing when the answer is a short name,
+place or number — at most four words, typed from memory and matched exactly.
+Anything longer, and especially any answer that is a reason or an explanation,
+must be multiple choice instead. A person who has the right idea but phrases it
+differently would otherwise be marked wrong, which is worse than making the
+question a little easier.
 
 The formats:
 - multiple_choice — four options, exactly one right. Use this for anything whose
@@ -407,9 +410,14 @@ ${illustratedKeys.map((key) => `- ${key}`).join("\n")}`
 
 ${factBrief(facts)}
 
-Write exactly ${spec.writtenCount} questions, of which at least
-${spec.multipleChoiceMinimum} must be multiple_choice. Leave a question as a typed
-answer only where that answer is a short name, place or number.
+Write exactly ${spec.writtenCount} questions, made up of:
+- exactly ${spec.multipleChoiceMinimum} with format "multiple_choice", each with four options;
+- ${spec.writtenCount - spec.multipleChoiceMinimum} typed-answer questions, using open_recall,
+  fill_blank or reverse, and only where the answer is a short name, place or
+  number of at most ${MAX_WRITTEN_ANSWER_WORDS} words.
+
+That split is not a suggestion. Fewer than ${spec.multipleChoiceMinimum} multiple-choice
+questions is a failed answer, however good the questions are.
 
 ${pictureInstruction}${monthlyExtra}`;
 

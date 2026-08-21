@@ -4,13 +4,21 @@ import { createServerClient } from "@supabase/ssr";
 import { publicEnv } from "@/lib/env";
 import type { Database } from "@/lib/types";
 
-/** Prefixes reachable without signing in. Everything else requires a session. */
+/**
+ * Prefixes that do not need a session. Everything else does.
+ *
+ * `/api/cron` and `/api/admin` are on the list because they authenticate
+ * themselves against CRON_SECRET, which a scheduled invocation can present and
+ * a browser session cannot. They are not open: without the bearer token they
+ * answer 401 from `isAuthorisedCron`.
+ */
 const PUBLIC_PREFIXES = [
   "/",
   "/facts",
   "/login",
   "/auth",
   "/unsubscribe",
+  "/api/admin",
   "/api/cron",
   "/api/unsubscribe",
   "/api/webhooks",

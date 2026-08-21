@@ -18,11 +18,17 @@ scheduling imprecision can't reorder them. Each gets its own 300-second budget.
 
 | Cron | Time (UTC) | What it does |
 |---|---|---|
-| `/api/cron/facts` | 01:00 | Eight facts for today, topics rotated |
-| `/api/cron/quizzes` | 03:00 | Self-gating: weekly on Mondays, monthly on the 1st |
+| `/api/cron/facts` | `0 1,2 * * *` | Eight facts for today, topics rotated |
+| `/api/cron/quizzes` | `0 3,4 * * *` | Self-gating: weekly on Mondays, monthly on the 1st |
 | `/api/cron/email` | `0 5,6 * * *` | Sends whatever is due, at 6am London |
 
-The email fires at two hours on purpose. Vercel crons are UTC-only, so 6am
+Facts and quizzes fire twice an hour apart because the model call can fail and
+`runOnce` retakes a run that errored. On 15 August 2026 the facts job hit an
+`overloaded_error` from the API, and with a single firing there was nothing to
+retry it — no facts that day, and an email that went out empty. The second
+firing costs nothing when the first succeeded: it reports `skipped` and stops.
+
+The email fires at two hours for a different reason. Vercel crons are UTC-only, so 6am
 London is 05:00 UTC under BST and 06:00 UTC under GMT. Both fire and the route
 drops whichever is before `SEND_HOUR` in London — returning *before* the
 `pqb_job_runs` guard, so the later one is still free to do the work. Without

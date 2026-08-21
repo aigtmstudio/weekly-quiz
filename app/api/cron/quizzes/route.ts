@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { isFirstOfMonth, isMonday, monthKey, today, weekKey } from "@/lib/dates";
 import { isAuthorisedCron, runOnce, type JobResult } from "@/lib/jobs";
-import { MIN_PICTURES, publishQuiz } from "@/lib/quiz";
+import { publishQuiz, SPEC } from "@/lib/quiz";
 import type { Cadence } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -52,8 +52,10 @@ export async function GET(request: Request) {
           `${published.questionCount} questions`,
           `${published.pictureCount} pictures`,
         ];
-        if (published.pictureCount < MIN_PICTURES) {
-          notes.push(`short picture round — ${published.skippedImages.join("; ")}`);
+        if (published.pictureCount < SPEC[cadence].pictureCount) {
+          notes.push(
+            `short picture round — only ${published.illustratedFacts} facts in the period had an image`,
+          );
         }
         return notes.join(", ");
       });

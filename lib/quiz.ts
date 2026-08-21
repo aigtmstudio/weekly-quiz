@@ -1,7 +1,5 @@
 import { generateJson } from "@/lib/claude";
 import { addDays, endOfMonth, formatLong, startOfMonth } from "@/lib/dates";
-import { slugify } from "@/lib/facts";
-import { ImageError, storeImage } from "@/lib/images";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Cadence, Fact, Quiz } from "@/lib/types";
 
@@ -24,29 +22,39 @@ export const WRITTEN_FORMATS = [
 
 export interface CadenceSpec {
   writtenCount: number;
-  pictureTarget: number;
-  pictureCandidates: number;
+  pictureCount: number;
   crossFactMinimum: number;
 }
 
 export const SPEC: Record<Cadence, CadenceSpec> = {
-  // 9 written + 3-4 pictures lands inside the 10-15 the weekly quiz wants.
+  // 9 written + 4 pictures = 13, inside the 10-15 the weekly quiz wants.
   weekly: {
     writtenCount: 9,
-    pictureTarget: 4,
-    pictureCandidates: 7,
+    pictureCount: 4,
     crossFactMinimum: 0,
   },
   // 15 written + 5 pictures = 20.
   monthly: {
     writtenCount: 15,
-    pictureTarget: 5,
-    pictureCandidates: 8,
+    pictureCount: 5,
     crossFactMinimum: 3,
   },
 };
 
-export const MIN_PICTURES = 3;
+/**
+ * The picture round can only be as big as the number of facts that actually
+ * went out with a picture. When it has to shrink, written questions make up the
+ * difference so the quiz stays the length it is supposed to be.
+ */
+export function specFor(cadence: Cadence, illustratedFacts: number): CadenceSpec {
+  const spec = SPEC[cadence];
+  const pictureCount = Math.min(spec.pictureCount, illustratedFacts);
+  return {
+    ...spec,
+    pictureCount,
+    writtenCount: spec.writtenCount + (spec.pictureCount - pictureCount),
+  };
+}
 
 export interface GeneratedWritten {
   fact_keys: string[];
@@ -58,8 +66,7 @@ export interface GeneratedWritten {
 }
 
 export interface GeneratedPicture {
-  fact_keys: string[];
-  wikipedia_article: string;
+  fact_key: string;
   prompt: string;
   correct_answer: string;
   accepted_answers: string[];
@@ -68,19 +75,20 @@ export interface GeneratedPicture {
 
 export interface GeneratedQuiz {
   questions: GeneratedWritten[];
-  picture_candidates: GeneratedPicture[];
+  pictures: GeneratedPicture[];
 }
 
 const ANSWER_PROPS = {
   correct_answer: {
     type: "string",
-    description: "The expected answer, as briefly as it can be stated.",
+    description:
+      "The expected answer, as briefly as it can be stated. For explain_why and explain_significance this is the key point on its own, in a few words — not a full sentence of reasoning. Put the reasoning in explanation instead.",
   },
   accepted_answers: {
     type: "array",
     items: { type: "string" },
     description:
-      "Other spellings, shorter forms or equivalent phrasings that should also count. Do not repeat correct_answer.",
+      "Other spellings, shorter forms or equivalent phrasings that should also count, including the blunt way someone would say it out loud. Do not repeat correct_answer.",
   },
   explanation: {
     type: "string",
@@ -88,7 +96,7 @@ const ANSWER_PROPS = {
   },
 } as const;
 
-function schemaFor(spec: CadenceSpec, factKeys: string[]) {
+function schemaFor(factKeys: string[], illustratedKeys: string[]) {
   return {
     type: "object",
     properties: {
@@ -118,23 +126,22 @@ function schemaFor(spec: CadenceSpec, factKeys: string[]) {
           additionalProperties: false,
         },
       },
-      picture_candidates: {
+      pictures: {
         type: "array",
         items: {
           type: "object",
           properties: {
-            fact_keys: { type: "array", items: { type: "string", enum: factKeys } },
-            wikipedia_article: {
+            fact_key: {
               type: "string",
+              enum: illustratedKeys,
               description:
-                "Exact title of the English Wikipedia article whose lead image should be shown.",
+                "The illustrated fact this question is about. Its picture is what gets shown.",
             },
             prompt: { type: "string" },
             ...ANSWER_PROPS,
           },
           required: [
-            "fact_keys",
-            "wikipedia_article",
+            "fact_key",
             "prompt",
             "correct_answer",
             "accepted_answers",
@@ -144,7 +151,7 @@ function schemaFor(spec: CadenceSpec, factKeys: string[]) {
         },
       },
     },
-    required: ["questions", "picture_candidates"],
+    required: ["questions", "pictures"],
     additionalProperties: false,
   };
 }
@@ -170,21 +177,32 @@ Use several different formats; do not lean on one.
 
 "accepted_answers" is where you are generous. Include shortened forms, common
 alternative spellings, with and without "the", surname alone where a full name is
-the answer. Grading is exact-match after case and punctuation are stripped, so
-anything a reasonable person might type has to be listed.
+the answer. Anything a reasonable person might type has to be listed.
 
-For picture questions, name the English Wikipedia article whose lead image shows
-the subject. Choose landmarks, flags, maps, machinery, animals, diagrams or
-historic photographs. Do not choose living people, album or film artwork, or
-paintings still in copyright. The article must be one with a lead image.
+Keep "correct_answer" short enough that someone could plausibly type it. For
+explain_why and explain_significance especially, it is the point itself — "the
+belt had been won outright" — not a sentence explaining the whole situation. The
+full picture belongs in "explanation", which is only shown after marking.
+
+Picture questions work differently. Each one is built on a fact that went out
+with a picture attached, and that same picture is shown above the question — the
+players have seen it before, in the briefing, next to the fact. Write the prompt
+as though the picture is in front of them: "This is the ____ that ___?" or
+"Which ___ is this, and what ___?". Never name the subject in the prompt if the
+subject is the answer — the picture is the clue. Only the facts listed as
+illustrated can be used, and each one at most once.
 
 British spelling throughout.`;
+
+export function illustrated(facts: Fact[]): Fact[] {
+  return facts.filter((fact) => Boolean(fact.image_path));
+}
 
 function factBrief(facts: Fact[]): string {
   return facts
     .map(
       (fact) =>
-        `[${fact.fact_key}] (${fact.topic}, ${fact.publish_date}) ${fact.title}\n  ${fact.key_fact}\n  ${fact.story}`,
+        `[${fact.fact_key}] (${fact.topic}, ${fact.publish_date})${fact.image_path ? ` [illustrated: ${fact.image_subject ?? fact.title}]` : ""} ${fact.title}\n  ${fact.key_fact}\n  ${fact.story}`,
     )
     .join("\n\n");
 }
@@ -201,16 +219,32 @@ export function validateGeneratedQuiz(
   value: GeneratedQuiz,
   spec: CadenceSpec,
   factKeys: string[],
+  illustratedKeys: string[] = factKeys,
 ): void {
   if (value.questions.length !== spec.writtenCount) {
     throw new Error(
       `expected exactly ${spec.writtenCount} written questions, got ${value.questions.length}`,
     );
   }
-  if (value.picture_candidates.length !== spec.pictureCandidates) {
+  if (value.pictures.length !== spec.pictureCount) {
     throw new Error(
-      `expected exactly ${spec.pictureCandidates} picture questions, got ${value.picture_candidates.length}`,
+      `expected exactly ${spec.pictureCount} picture questions, got ${value.pictures.length}`,
     );
+  }
+
+  const notIllustrated = value.pictures.find(
+    (picture) => !illustratedKeys.includes(picture.fact_key),
+  );
+  if (notIllustrated) {
+    throw new Error(
+      `picture question uses "${notIllustrated.fact_key}", which has no picture — only the illustrated facts can be used`,
+    );
+  }
+
+  const pictureKeys = value.pictures.map((picture) => picture.fact_key);
+  const duplicate = pictureKeys.find((key, index) => pictureKeys.indexOf(key) !== index);
+  if (duplicate) {
+    throw new Error(`"${duplicate}" is used for two picture questions; use each once`);
   }
 
   const notWritten = value.questions.find(
@@ -234,16 +268,17 @@ export function validateGeneratedQuiz(
     );
   }
 
-  const all = [...value.questions, ...value.picture_candidates];
-  const orphan = all.find((q) => q.fact_keys.length === 0);
+  const orphan = value.questions.find((q) => q.fact_keys.length === 0);
   if (orphan) {
     throw new Error(`"${orphan.prompt}" is not attached to any fact`);
   }
-  const unknown = all.flatMap((q) => q.fact_keys).find((key) => !factKeys.includes(key));
+  const unknown = value.questions
+    .flatMap((q) => q.fact_keys)
+    .find((key) => !factKeys.includes(key));
   if (unknown) {
     throw new Error(`fact_keys contains "${unknown}", which is not one of the facts`);
   }
-  const leaky = all.find((q) =>
+  const leaky = [...value.questions, ...value.pictures].find((q) =>
     q.prompt.toLowerCase().includes(q.correct_answer.toLowerCase().trim()),
   );
   if (leaky) {
@@ -257,8 +292,10 @@ export async function generateQuiz(
   periodStart: string,
   periodEnd: string,
 ): Promise<GeneratedQuiz> {
-  const spec = SPEC[cadence];
+  const withPictures = illustrated(facts);
+  const spec = specFor(cadence, withPictures.length);
   const factKeys = facts.map((f) => f.fact_key);
+  const illustratedKeys = withPictures.map((f) => f.fact_key);
 
   const monthlyExtra =
     cadence === "monthly"
@@ -268,59 +305,55 @@ of the written questions must connect two separate facts — give those two entr
 in fact_keys.`
       : "";
 
+  const pictureInstruction = spec.pictureCount
+    ? `Write exactly ${spec.pictureCount} picture questions, each on a different one of these
+illustrated facts:
+${illustratedKeys.map((key) => `- ${key}`).join("\n")}`
+    : `Write no picture questions — none of these facts went out with a picture.`;
+
   const prompt = `Facts covered between ${formatLong(periodStart)} and ${formatLong(periodEnd)}:
 
 ${factBrief(facts)}
 
-Write exactly ${spec.writtenCount} written questions and exactly ${spec.pictureCandidates}
-picture questions.
+Write exactly ${spec.writtenCount} written questions.
 
-More picture questions are requested than will be used, because some Wikipedia
-articles turn out to have no usable lead image. Order them best first.${monthlyExtra}`;
+${pictureInstruction}${monthlyExtra}`;
 
   return generateJson<GeneratedQuiz>({
     system: SYSTEM,
     prompt,
-    schema: schemaFor(spec, factKeys) as unknown as Record<string, unknown>,
+    schema: schemaFor(factKeys, illustratedKeys) as unknown as Record<string, unknown>,
     effort: "high",
-    validate: (value) => validateGeneratedQuiz(value, spec, factKeys),
+    validate: (value) => validateGeneratedQuiz(value, spec, factKeys, illustratedKeys),
   });
 }
 
 export interface ResolvedPicture extends GeneratedPicture {
   image_path: string;
-  image_credit: string;
+  image_credit: string | null;
 }
 
 /**
- * Work down the candidates resolving images until `target` are in hand.
+ * Attach each picture question to the image its fact already carries.
  *
- * Candidates whose article has no lead image are skipped, never substituted —
- * showing the wrong picture is worse than a shorter picture round.
+ * Nothing is fetched here any more. The picture round used to resolve its own
+ * Wikipedia article at quiz time, which meant the images were guaranteed to be
+ * ones nobody had ever seen — an impossible round dressed up as a recall test.
+ * Now the only pictures in play are the ones that went out with the briefing.
  */
-export async function resolvePictures(
+export function attachPictures(
   candidates: GeneratedPicture[],
-  target: number,
-  store: typeof storeImage = storeImage,
-): Promise<{ pictures: ResolvedPicture[]; skipped: string[] }> {
-  const pictures: ResolvedPicture[] = [];
-  const skipped: string[] = [];
+  facts: Fact[],
+): ResolvedPicture[] {
+  const byKey = new Map(facts.map((fact) => [fact.fact_key, fact]));
 
-  for (const candidate of candidates) {
-    if (pictures.length >= target) break;
-    try {
-      const { imagePath, imageCredit } = await store(
-        candidate.wikipedia_article,
-        slugify(candidate.wikipedia_article),
-      );
-      pictures.push({ ...candidate, image_path: imagePath, image_credit: imageCredit });
-    } catch (error) {
-      if (!(error instanceof ImageError)) throw error;
-      skipped.push(`${candidate.wikipedia_article}: ${error.message}`);
-    }
-  }
-
-  return { pictures, skipped };
+  return candidates.flatMap((candidate) => {
+    const fact = byKey.get(candidate.fact_key);
+    if (!fact?.image_path) return [];
+    return [
+      { ...candidate, image_path: fact.image_path, image_credit: fact.image_credit },
+    ];
+  });
 }
 
 export function periodFor(cadence: Cadence, date: string): { start: string; end: string } {
@@ -336,7 +369,8 @@ export interface PublishResult {
   quiz: Quiz;
   questionCount: number;
   pictureCount: number;
-  skippedImages: string[];
+  /** Facts in the period that had a picture to draw on. */
+  illustratedFacts: number;
 }
 
 export async function publishQuiz(
@@ -344,7 +378,6 @@ export async function publishQuiz(
   date: string,
 ): Promise<PublishResult | null> {
   const db = createAdminClient();
-  const spec = SPEC[cadence];
   const { start, end } = periodFor(cadence, date);
 
   const { data: facts, error: factsError } = await db
@@ -356,16 +389,16 @@ export async function publishQuiz(
     .order("position");
   if (factsError) throw factsError;
 
+  const withPictures = illustrated(facts ?? []);
+  const spec = specFor(cadence, withPictures.length);
+
   if (!facts || facts.length < spec.writtenCount) {
     // Not enough material — better no quiz than a padded one.
     return null;
   }
 
   const generated = await generateQuiz(cadence, facts, start, end);
-  const { pictures, skipped } = await resolvePictures(
-    generated.picture_candidates,
-    spec.pictureTarget,
-  );
+  const pictures = attachPictures(generated.pictures, facts);
 
   // Insert unpublished first, so a failure part-way never leaves a current quiz
   // with no questions in it.
@@ -396,7 +429,7 @@ export async function publishQuiz(
     })),
     ...pictures.map((picture, index) => ({
       quiz_id: quiz.id,
-      fact_key: picture.fact_keys[0] ?? null,
+      fact_key: picture.fact_key,
       format: "picture" as const,
       prompt: picture.prompt,
       correct_answer: picture.correct_answer,
@@ -433,6 +466,6 @@ export async function publishQuiz(
     quiz: published,
     questionCount: rows.length,
     pictureCount: pictures.length,
-    skippedImages: skipped,
+    illustratedFacts: withPictures.length,
   };
 }

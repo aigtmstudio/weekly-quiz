@@ -45,6 +45,32 @@ All three require `Authorization: Bearer $CRON_SECRET`, which Vercel sends
 automatically for crons declared in `vercel.json`. Each is idempotent for its
 period via `pqb_job_runs`, so a retry never double-produces.
 
+### Pictures
+
+Each fact nominates the Wikipedia article whose lead image shows its subject.
+The picture is fetched once at generation time, stored in Blob under
+`fact-images/`, and shown in the briefing — on the site and, as a `cid:`
+attachment, in the email.
+
+**The quiz's picture round draws only on facts that went out with a picture.**
+It used to resolve its own Wikipedia article per question, independently of the
+briefing, which meant the images were guaranteed to be ones nobody had ever
+seen — an impossible round dressed up as a recall test. When too few facts in
+the period have a picture, the round shrinks and written questions make up the
+difference, so the quiz stays the length it should be (`specFor`).
+
+Facts written before this existed have no picture, and a quiz covering them
+would have no picture round. `/api/admin/backfill-images` fixes that on demand:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  "$SITE_URL/api/admin/backfill-images?days=14&limit=30"
+```
+
+It only touches facts with no `image_subject`, and records the subject even when
+no usable image comes back, so nothing is retried for ever. Run it again while
+`remaining` is above zero.
+
 ## Setting it up
 
 1. **Environment variables.** Copy `.env.example` and fill it in, then
@@ -112,11 +138,17 @@ archive, and the two `LEGACY_*` variables can be deleted.
   actually ran. Answers now hang off an attempt, which hangs off a person, and
   attach to a durable `fact_key` rather than to a question that only exists
   inside one week's quiz.
+- **The same two facts every morning.** "Worth another look" ranked on
+  `last_seen_at`, and every fact missed in one quiz shares that timestamp
+  exactly — so the order was identical every day and the same two came back all
+  week while the rest of the backlog waited. Showing a fact now has its own
+  clock (`pqb_resurfacings`), the ranking puts whatever has waited longest
+  first, and a fact stands down for `RESURFACE_COOLDOWN_DAYS` once shown.
 
 ## Checking it
 
 ```bash
-npm test           # 56 tests, no network
+npm test           # 92 tests, no network
 npm run typecheck
 npm run build
 ```
@@ -128,7 +160,7 @@ curl -H "Authorization: Bearer $CRON_SECRET" https://<deployment>/api/cron/facts
 ```
 
 Call it twice — the second call should report `skipped` and today should still
-have exactly five facts.
+have exactly eight facts.
 
 The real success condition is the morning after deploying: all three crons ran
 and no approval prompt appeared anywhere.

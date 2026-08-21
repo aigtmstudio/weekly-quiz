@@ -54,11 +54,33 @@ function footerHtml(siteUrl: string, unsubscribeUrl: string): string {
 </p>`;
 }
 
-function factHtml(fact: Fact): string {
+const IMG_STYLE =
+  "display:block;max-width:100%;height:auto;border:1px solid #e5e1d8;border-radius:6px;margin:0 0 10px;";
+const CREDIT_STYLE =
+  "font-family:Helvetica,Arial,sans-serif;font-size:11px;color:#6c6862;margin:0 0 12px;";
+
+/**
+ * The picture is the whole point of the fact carrying one: the quiz's picture
+ * round is built from these, so if it does not appear in the briefing the round
+ * is unanswerable. `images` is appended to, and the sender attaches each one by
+ * content ID.
+ */
+function factHtml(fact: Fact, images: ReferencedImage[]): string {
+  let imageHtml = "";
+  if (fact.image_path) {
+    const cid = `f${images.length + 1}`;
+    images.push({ cid, url: fact.image_path, filename: `${cid}.jpg` });
+    imageHtml = `<img src="cid:${cid}" width="420" alt="${escapeHtml(fact.image_subject ?? fact.title)}" style="${IMG_STYLE}" />${
+      fact.image_credit
+        ? `<p style="${CREDIT_STYLE}">${escapeHtml(fact.image_credit)}</p>`
+        : ""
+    }`;
+  }
+
   return `<div style="${CARD_STYLE}">
 <p style="${LABEL_STYLE}">${escapeHtml(fact.topic)}</p>
 <h2 style="font-size:19px;margin:0 0 8px;">${escapeHtml(fact.title)}</h2>
-<p style="margin:0;">${escapeHtml(fact.key_fact)}</p>
+${imageHtml}<p style="margin:0;">${escapeHtml(fact.key_fact)}</p>
 <p style="${MUTED_STYLE}">${escapeHtml(fact.story)}</p>
 </div>`;
 }
@@ -82,16 +104,17 @@ export function dailyEmail({
   siteUrl,
   unsubscribeUrl,
 }: DailyEmailInput): EmailBody {
+  const images: ReferencedImage[] = [];
+
+  const factSection = facts.map((fact) => factHtml(fact, images)).join("");
   const repeatSection = repeats.length
     ? `<h2 style="font-size:15px;font-family:Helvetica,Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#6c6862;margin:28px 0 12px;">Worth another look</h2>${repeats
-        .map(factHtml)
+        .map((fact) => factHtml(fact, images))
         .join("")}`
     : "";
 
   const html = shell(
-    `<h1 style="font-size:24px;margin:0 0 20px;">${escapeHtml(formatLong(date))}</h1>${facts
-      .map(factHtml)
-      .join("")}${repeatSection}`,
+    `<h1 style="font-size:24px;margin:0 0 20px;">${escapeHtml(formatLong(date))}</h1>${factSection}${repeatSection}`,
     footerHtml(siteUrl, unsubscribeUrl),
   );
 
@@ -105,10 +128,10 @@ export function dailyEmail({
   ].join("\n");
 
   return {
-    subject: `Five facts — ${formatShort(date)}`,
+    subject: `${facts.length} facts — ${formatShort(date)}`,
     html,
     text,
-    images: [],
+    images,
   };
 }
 

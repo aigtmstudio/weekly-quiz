@@ -59,6 +59,45 @@ export interface GradedAttempt {
 }
 
 /**
+ * Which answers are worth a second look by the marker.
+ *
+ * Only ones exact matching rejected, and only where the person actually wrote
+ * something — a blank is wrong on its own terms and never worth an API call.
+ */
+export function needsReview(graded: GradedAttempt): GradedAnswer[] {
+  return graded.answers.filter(
+    (answer) => !answer.is_correct && answer.response.trim().length > 0,
+  );
+}
+
+/**
+ * Fold the marker's verdicts back in.
+ *
+ * Upgrades only: a verdict can rescue a wrong answer but can never overturn one
+ * the exact match already accepted, so the deterministic pass stays the floor.
+ */
+export function applyVerdicts(
+  graded: GradedAttempt,
+  verdicts: Array<{ question_id: string; is_correct: boolean }>,
+): GradedAttempt {
+  const rescued = new Set(
+    verdicts.filter((verdict) => verdict.is_correct).map((v) => v.question_id),
+  );
+
+  const answers = graded.answers.map((answer) =>
+    answer.is_correct || !rescued.has(answer.question_id)
+      ? answer
+      : { ...answer, is_correct: true },
+  );
+
+  return {
+    ...graded,
+    answers,
+    score: answers.filter((answer) => answer.is_correct).length,
+  };
+}
+
+/**
  * Grade a whole attempt. `responses` is keyed by question id; questions with no
  * entry are marked wrong and still recorded, so the repetition scheduler sees
  * them.

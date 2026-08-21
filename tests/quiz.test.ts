@@ -1,19 +1,53 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { ImageError } from "@/lib/images";
 import {
-  MIN_PICTURES,
   SPEC,
   WRITTEN_FORMATS,
+  attachPictures,
   type GeneratedPicture,
   type GeneratedQuiz,
   type GeneratedWritten,
+  illustrated,
   periodFor,
-  resolvePictures,
+  specFor,
   validateGeneratedQuiz,
 } from "@/lib/quiz";
+import type { Fact } from "@/lib/types";
 
 const FACT_KEYS = Array.from({ length: 40 }, (_, i) => `fact-${i}`);
+
+/** The first eight facts are the illustrated ones throughout. */
+const ILLUSTRATED_KEYS = FACT_KEYS.slice(0, 8);
+
+function fact(key: string, overrides: Partial<Fact> = {}): Fact {
+  return {
+    id: key,
+    fact_key: key,
+    publish_date: "2026-08-17",
+    position: 1,
+    topic: "history",
+    title: `Fact ${key}`,
+    key_fact: "Something happened.",
+    story: "It happened like this. And then this. And finally this.",
+    tags: [],
+    source: null,
+    image_subject: null,
+    image_path: null,
+    image_credit: null,
+    created_at: "2026-08-17T00:00:00Z",
+    ...overrides,
+  };
+}
+
+const FACTS: Fact[] = FACT_KEYS.map((key) =>
+  ILLUSTRATED_KEYS.includes(key)
+    ? fact(key, {
+        image_subject: `Subject ${key}`,
+        image_path: `https://blob/${key}.jpg`,
+        image_credit: "Wikipedia",
+      })
+    : fact(key),
+);
 
 function written(index: number, overrides: Partial<GeneratedWritten> = {}): GeneratedWritten {
   return {
@@ -29,8 +63,7 @@ function written(index: number, overrides: Partial<GeneratedWritten> = {}): Gene
 
 function picture(index: number, overrides: Partial<GeneratedPicture> = {}): GeneratedPicture {
   return {
-    fact_keys: [FACT_KEYS[index % FACT_KEYS.length]],
-    wikipedia_article: `Article ${index}`,
+    fact_key: ILLUSTRATED_KEYS[index % ILLUSTRATED_KEYS.length],
     prompt: `What is shown here, number ${index}?`,
     correct_answer: `Subject ${index}`,
     accepted_answers: [],
@@ -39,8 +72,7 @@ function picture(index: number, overrides: Partial<GeneratedPicture> = {}): Gene
   };
 }
 
-function quizFor(cadence: "weekly" | "monthly"): GeneratedQuiz {
-  const spec = SPEC[cadence];
+function quizFor(cadence: "weekly" | "monthly", spec = SPEC[cadence]): GeneratedQuiz {
   const questions = Array.from({ length: spec.writtenCount }, (_, i) => written(i));
 
   // Monthly quizzes must join two facts at least three times.
@@ -50,18 +82,22 @@ function quizFor(cadence: "weekly" | "monthly"): GeneratedQuiz {
 
   return {
     questions,
-    picture_candidates: Array.from({ length: spec.pictureCandidates }, (_, i) => picture(i)),
+    pictures: Array.from({ length: spec.pictureCount }, (_, i) => picture(i)),
   };
+}
+
+function validate(quiz: GeneratedQuiz, cadence: "weekly" | "monthly", spec = SPEC[cadence]) {
+  validateGeneratedQuiz(quiz, spec, FACT_KEYS, ILLUSTRATED_KEYS);
 }
 
 describe("validateGeneratedQuiz", () => {
   it("accepts a well-formed weekly quiz", () => {
-    expect(() => validateGeneratedQuiz(quizFor("weekly"), SPEC.weekly, FACT_KEYS)).not.toThrow();
+    expect(() => validate(quizFor("weekly"), "weekly")).not.toThrow();
   });
 
   it("accepts a well-formed monthly quiz", () => {
     expect(() =>
-      validateGeneratedQuiz(quizFor("monthly"), SPEC.monthly, FACT_KEYS),
+      validate(quizFor("monthly"), "monthly"),
     ).not.toThrow();
   });
 
@@ -69,7 +105,7 @@ describe("validateGeneratedQuiz", () => {
     const quiz = quizFor("weekly");
     quiz.questions.pop();
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.weekly, FACT_KEYS)).toThrow(
+    expect(() => validate(quiz, "weekly")).toThrow(
       /expected exactly 9 written questions/,
     );
   });
@@ -81,7 +117,7 @@ describe("validateGeneratedQuiz", () => {
       format: "legacy_multiple_choice" as GeneratedWritten["format"],
     };
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.weekly, FACT_KEYS)).toThrow(
+    expect(() => validate(quiz, "weekly")).toThrow(
       /not one of the allowed formats/,
     );
   });
@@ -93,7 +129,7 @@ describe("validateGeneratedQuiz", () => {
       format: "open_recall",
     }));
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.weekly, FACT_KEYS)).toThrow(
+    expect(() => validate(quiz, "weekly")).toThrow(
       /at least four of the five/,
     );
   });
@@ -105,7 +141,7 @@ describe("validateGeneratedQuiz", () => {
       fact_keys: [question.fact_keys[0]],
     }));
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.monthly, FACT_KEYS)).toThrow(
+    expect(() => validate(quiz, "monthly")).toThrow(
       /at least 3 must/,
     );
   });
@@ -113,14 +149,14 @@ describe("validateGeneratedQuiz", () => {
   it("does not demand cross-fact questions of a weekly quiz", () => {
     const quiz = quizFor("weekly");
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.weekly, FACT_KEYS)).not.toThrow();
+    expect(() => validate(quiz, "weekly")).not.toThrow();
   });
 
   it("rejects a question attached to a fact that was not supplied", () => {
     const quiz = quizFor("weekly");
     quiz.questions[0].fact_keys = ["invented-fact"];
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.weekly, FACT_KEYS)).toThrow(
+    expect(() => validate(quiz, "weekly")).toThrow(
       /not one of the facts/,
     );
   });
@@ -133,67 +169,68 @@ describe("validateGeneratedQuiz", () => {
       correct_answer: "Rijksmuseum",
     };
 
-    expect(() => validateGeneratedQuiz(quiz, SPEC.weekly, FACT_KEYS)).toThrow(
+    expect(() => validate(quiz, "weekly")).toThrow(
       /contains its own answer/,
     );
   });
 });
 
-describe("resolvePictures", () => {
-  const candidates = Array.from({ length: 7 }, (_, i) => picture(i));
+describe("the picture round draws only on facts that were sent with a picture", () => {
+  it("rejects a picture question about a fact that had no image", () => {
+    const quiz = quizFor("weekly");
+    quiz.pictures[0].fact_key = "fact-30";
 
-  function store(failing: Set<string>) {
-    return vi.fn(async (article: string) => {
-      if (failing.has(article)) {
-        throw new ImageError(`"${article}" has no lead image`);
-      }
-      return { imagePath: `https://blob/${article}.jpg`, imageCredit: "Wikipedia" };
-    });
-  }
-
-  it("stops once it has the target number", async () => {
-    const stored = store(new Set());
-    const { pictures, skipped } = await resolvePictures(candidates, 4, stored);
-
-    expect(pictures).toHaveLength(4);
-    expect(skipped).toEqual([]);
-    // Doesn't download images it isn't going to use.
-    expect(stored).toHaveBeenCalledTimes(4);
+    expect(() => validate(quiz, "weekly")).toThrow(/only the illustrated facts/);
   });
 
-  it("skips a subject with no lead image and moves to the next", async () => {
-    const stored = store(new Set(["Article 0", "Article 2"]));
-    const { pictures, skipped } = await resolvePictures(candidates, 4, stored);
+  it("rejects the same picture being used twice", () => {
+    const quiz = quizFor("weekly");
+    quiz.pictures[1].fact_key = quiz.pictures[0].fact_key;
 
-    expect(pictures).toHaveLength(4);
-    expect(pictures.map((p) => p.wikipedia_article)).not.toContain("Article 0");
-    expect(skipped).toHaveLength(2);
+    expect(() => validate(quiz, "weekly")).toThrow(/two picture questions/);
   });
 
-  it("never substitutes a different subject's image", async () => {
-    const stored = store(new Set());
-    const { pictures } = await resolvePictures(candidates, 4, stored);
+  it("shows each question the picture its own fact carried", () => {
+    const attached = attachPictures(quizFor("weekly").pictures, FACTS);
 
-    for (const resolved of pictures) {
-      expect(resolved.image_path).toBe(`https://blob/${resolved.wikipedia_article}.jpg`);
+    expect(attached).toHaveLength(SPEC.weekly.pictureCount);
+    for (const resolved of attached) {
+      expect(resolved.image_path).toBe(`https://blob/${resolved.fact_key}.jpg`);
+      expect(resolved.image_credit).toBe("Wikipedia");
     }
   });
 
-  it("returns a short round rather than failing when too many subjects fail", async () => {
-    const stored = store(new Set(candidates.slice(0, 5).map((c) => c.wikipedia_article)));
-    const { pictures, skipped } = await resolvePictures(candidates, 4, stored);
+  it("drops a question rather than showing a picture that is not there", () => {
+    const attached = attachPictures([picture(0), picture(0, { fact_key: "fact-30" })], FACTS);
 
-    expect(pictures).toHaveLength(2);
-    expect(pictures.length).toBeLessThan(MIN_PICTURES);
-    expect(skipped).toHaveLength(5);
+    expect(attached.map((p) => p.fact_key)).toEqual([ILLUSTRATED_KEYS[0]]);
   });
 
-  it("lets an unexpected error through instead of silently dropping the picture", async () => {
-    const stored = vi.fn(async () => {
-      throw new TypeError("blob store misconfigured");
-    });
+  it("counts only the facts that have an image", () => {
+    expect(illustrated(FACTS)).toHaveLength(ILLUSTRATED_KEYS.length);
+  });
+});
 
-    await expect(resolvePictures(candidates, 4, stored)).rejects.toThrow(TypeError);
+describe("specFor", () => {
+  it("keeps the quiz the same length when there are too few pictures", () => {
+    const spec = specFor("weekly", 1);
+
+    expect(spec.pictureCount).toBe(1);
+    expect(spec.writtenCount + spec.pictureCount).toBe(
+      SPEC.weekly.writtenCount + SPEC.weekly.pictureCount,
+    );
+  });
+
+  it("drops the picture round entirely when no fact had an image", () => {
+    const spec = specFor("monthly", 0);
+
+    expect(spec.pictureCount).toBe(0);
+    expect(spec.writtenCount).toBe(20);
+    expect(() => validate(quizFor("monthly", spec), "monthly", spec)).not.toThrow();
+  });
+
+  it("never asks for more pictures than the cadence wants", () => {
+    expect(specFor("weekly", 30).pictureCount).toBe(SPEC.weekly.pictureCount);
   });
 });
 

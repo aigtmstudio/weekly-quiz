@@ -34,6 +34,9 @@ export type Fact = {
   story: string;
   tags: string[];
   source: string | null;
+  image_subject: string | null;
+  image_path: string | null;
+  image_credit: string | null;
   created_at: string;
 };
 
@@ -132,6 +135,13 @@ export type EmailLogEntry = {
   provider_id: string | null;
 };
 
+/** One day's worth of facts brought back for one person. */
+export type Resurfacing = {
+  user_id: string;
+  fact_key: string;
+  shown_on: string;
+};
+
 export type SigninAttempt = {
   id: string;
   email: string;
@@ -208,6 +218,7 @@ export type Database = {
         Pick<EmailLogEntry, "user_id" | "cadence" | "period_key"> &
           Partial<EmailLogEntry>
       >;
+      pqb_resurfacings: Table<Resurfacing, Resurfacing>;
       pqb_signin_attempts: Table<
         SigninAttempt,
         Pick<SigninAttempt, "email"> & Partial<SigninAttempt>

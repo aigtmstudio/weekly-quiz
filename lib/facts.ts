@@ -1,5 +1,6 @@
 import { generateJson } from "@/lib/claude";
 import { addDays, daysBetween, formatLong } from "@/lib/dates";
+import { ImageError, storeImage } from "@/lib/images";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Fact } from "@/lib/types";
 
@@ -26,6 +27,9 @@ export const TOPICS = [
 export type Topic = (typeof TOPICS)[number];
 
 export const FACTS_PER_DAY = 8;
+
+/** Blob folder for fact pictures, kept apart from quiz images. */
+export const FACT_IMAGE_FOLDER = "fact-images";
 
 /** How many topics sit out each day. */
 export const RESTING_TOPICS = TOPICS.length - FACTS_PER_DAY;
@@ -85,6 +89,7 @@ export interface GeneratedFact {
   key_fact: string;
   story: string;
   tags: string[];
+  image_subject: string;
 }
 
 const FACTS_SCHEMA = {
@@ -113,8 +118,13 @@ const FACTS_SCHEMA = {
             items: { type: "string" },
             description: "Two to four lowercase keywords.",
           },
+          image_subject: {
+            type: "string",
+            description:
+              "Exact title of the English Wikipedia article whose lead image shows the subject of this fact. Empty string if the fact has no thing worth looking at.",
+          },
         },
-        required: ["topic", "title", "key_fact", "story", "tags"],
+        required: ["topic", "title", "key_fact", "story", "tags", "image_subject"],
         additionalProperties: false,
       },
     },
@@ -127,16 +137,26 @@ const SYSTEM = `You write a daily briefing of interesting facts for two people w
 enjoy pub quizzes. They are British.
 
 What makes a good fact here:
+- Built on a subject a pub quizzer would recognise. This is the most important
+  rule and the easiest to get wrong. Aim for a famous subject with a
+  lesser-known detail, not an obscure subject with an interesting detail. The
+  Hubble telescope, the Beatles, Wembley, Chernobyl, Guinness, the Mona Lisa,
+  the Tube — these are the kinds of things quizzes are actually set on. If the
+  fact needs a sentence explaining what the subject even is before it can land,
+  choose something else.
 - Worth saying out loud to someone else. Prefer facts that carry a story or a
   punchline — a mishap, a piece of stubbornness, an unintended consequence, a
   decision that looks absurd in hindsight. If a fact has no more to it than the
   bare figure, it is a weaker choice than one that does.
-- Genuinely surprising, and specific enough to be quizzable later. Names,
-  numbers, dates and places are the point.
+- Specific enough to be quizzable later. Names, numbers, dates and places are
+  the point.
 - True and checkable. If a claim is commonly repeated but disputed, say so or
   pick something else. A good story that turns out to be a myth is worse than no
   fact at all.
-- Not the same tired trivia everybody has already heard.
+- Avoid only the dozen or so facts that appear on every trivia listicle — Big
+  Ben being the bell, Nelson's missing eye. Do not chase obscurity to avoid
+  them; a well-known subject most people still could not quiz on is exactly
+  right.
 
 Format for each fact:
 - "key_fact" is one punchy sentence — the fact itself, no preamble.
@@ -161,7 +181,86 @@ What each topic covers, so they don't overlap:
 - sport — football with a UK emphasis, tennis, golf, Formula 1, the NFL, the
   Olympics and athletics, or the Tour de France. Nothing outside that list.
 
+For "image_subject", name the English Wikipedia article whose lead image shows
+what the fact is about — the building, the object, the animal, the place, the
+painting. These pictures are shown in the briefing and later used for the quiz's
+picture round, so pick the thing a person would recognise on sight. Landmarks,
+flags, maps, machinery, animals, artefacts, diagrams and historic photographs
+all work. Leave it empty rather than reaching: an abstract fact about inflation
+or a parliamentary procedure has nothing worth showing, and a weak picture is
+worse than none. Do not choose living people, album or film artwork, or
+paintings still in copyright.
+
 British spelling throughout.`;
+
+const IMAGE_SUBJECT_SCHEMA = {
+  type: "object",
+  properties: {
+    subjects: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          fact_key: { type: "string" },
+          image_subject: {
+            type: "string",
+            description:
+              "Exact English Wikipedia article title whose lead image shows this fact's subject, or an empty string if there is nothing worth showing.",
+          },
+        },
+        required: ["fact_key", "image_subject"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["subjects"],
+  additionalProperties: false,
+} as const;
+
+export interface FactForImage {
+  fact_key: string;
+  topic: string;
+  title: string;
+  key_fact: string;
+}
+
+/**
+ * Pick a picture subject for facts that were written before the briefing
+ * carried pictures. Same rules as the generator uses, applied after the fact.
+ *
+ * Returns fact_key → article title, empty string where nothing suits.
+ */
+export async function imageSubjectsFor(
+  facts: FactForImage[],
+): Promise<Map<string, string>> {
+  if (facts.length === 0) return new Map();
+
+  const { subjects } = await generateJson<{
+    subjects: Array<{ fact_key: string; image_subject: string }>;
+  }>({
+    system: SYSTEM,
+    prompt: `For each fact below, give the "image_subject" as described: the English
+Wikipedia article whose lead image shows what the fact is about. Nothing else is
+needed — no titles, no stories, just the subjects.
+
+${facts.map((fact) => `[${fact.fact_key}] (${fact.topic}) ${fact.title}\n  ${fact.key_fact}`).join("\n\n")}
+
+Return one entry for every fact, keeping the fact_key exactly as given.`,
+    schema: IMAGE_SUBJECT_SCHEMA as unknown as Record<string, unknown>,
+    effort: "low",
+    validate: (value) => {
+      const returned = new Set(value.subjects.map((s) => s.fact_key));
+      const missing = facts.filter((fact) => !returned.has(fact.fact_key));
+      if (missing.length) {
+        throw new Error(
+          `no image_subject for: ${missing.map((f) => f.fact_key).join(", ")}`,
+        );
+      }
+    },
+  });
+
+  return new Map(subjects.map((s) => [s.fact_key, s.image_subject.trim()]));
+}
 
 interface GenerateOptions {
   date: string;
@@ -241,6 +340,10 @@ export async function publishFacts(date: string): Promise<Fact[]> {
     date,
   );
 
+  const images = await storeFactImages(
+    generated.map((fact, index) => ({ ...fact, fact_key: keys[index] })),
+  );
+
   const rows = generated.map((fact, index) => ({
     fact_key: keys[index],
     publish_date: date,
@@ -251,9 +354,43 @@ export async function publishFacts(date: string): Promise<Fact[]> {
     story: fact.story,
     tags: fact.tags,
     source: null,
+    image_subject: fact.image_subject.trim() || null,
+    image_path: images.get(keys[index])?.imagePath ?? null,
+    image_credit: images.get(keys[index])?.imageCredit ?? null,
   }));
 
   const { data, error } = await db.from("pqb_facts").insert(rows).select();
   if (error) throw error;
   return data ?? [];
+}
+
+/**
+ * Fetch and store a picture for each fact that nominated a subject.
+ *
+ * A missing or illustration-less article is not a failure: the fact still
+ * stands on its own, and a briefing without one picture is much better than no
+ * briefing at all. Sequential rather than parallel — eight requests is nothing
+ * to us, and hammering Wikipedia eight-wide for a personal app is bad manners.
+ */
+export async function storeFactImages(
+  items: Array<{ fact_key: string; image_subject: string; title: string }>,
+  store: typeof storeImage = storeImage,
+): Promise<Map<string, { imagePath: string; imageCredit: string }>> {
+  const stored = new Map<string, { imagePath: string; imageCredit: string }>();
+
+  for (const item of items) {
+    const subject = item.image_subject.trim();
+    if (!subject) continue;
+    try {
+      stored.set(
+        item.fact_key,
+        await store(subject, item.fact_key, fetch, FACT_IMAGE_FOLDER),
+      );
+    } catch (error) {
+      if (!(error instanceof ImageError)) throw error;
+      console.warn(`No image for "${item.title}" (${subject}): ${error.message}`);
+    }
+  }
+
+  return stored;
 }

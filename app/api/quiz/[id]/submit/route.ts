@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { gradeAttempt } from "@/lib/grader";
+import { applyVerdicts, gradeAttempt, needsReview } from "@/lib/grader";
+import { markFreeText } from "@/lib/marker";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -99,7 +100,24 @@ export async function POST(
     );
   }
 
-  const graded = gradeAttempt(questions, responses);
+  const exact = gradeAttempt(questions, responses);
+
+  // Exact matching can't mark an "explain why" answer — the expected answer is
+  // a whole clause, and nobody phrases it the same way twice. Anything it
+  // rejected gets read for meaning before the score is final.
+  const pending = needsReview(exact).map((answer) => {
+    const question = questions.find((q) => q.id === answer.question_id)!;
+    return {
+      question_id: question.id,
+      prompt: question.prompt,
+      expected: question.correct_answer,
+      accepted: question.accepted_answers,
+      explanation: question.explanation,
+      response: answer.response,
+    };
+  });
+
+  const graded = applyVerdicts(exact, await markFreeText(pending));
 
   const { error: answersError } = await db.from("pqb_answers").upsert(
     graded.answers.map((answer) => ({

@@ -5,10 +5,21 @@ import type { Fact, FactPerformance } from "@/lib/types";
 /**
  * Personalised repetition.
  *
- * Each person's daily email is the five shared facts plus one or two they have
+ * Each person's daily briefing is the day's new facts plus one or two they have
  * previously got wrong. Facts they have never got wrong are not resurfaced —
- * with no history there is nothing to space out, and padding the email with
+ * with no history there is nothing to space out, and padding the briefing with
  * things they already know would make it worth less, not more.
+ *
+ * The scheduler needs two different clocks and it is easy to conflate them:
+ *
+ *   - `last_seen_at` — when the fact was last *tested*, from an attempt.
+ *   - `shown_on`     — when the fact was last *resurfaced* in a briefing.
+ *
+ * Only the first of those existed originally, which meant showing a fact
+ * changed nothing about its ranking. Every fact wrong in the same quiz shared
+ * an identical last_seen_at, so the ordering was byte-for-byte identical every
+ * morning and the same two facts came back day after day. pqb_resurfacings is
+ * the second clock.
  */
 
 /** Expanding gaps, in days, as a fact is recalled correctly more often. */
@@ -19,6 +30,9 @@ export const INTERVALS = [1, 3, 7, 21];
  * Two days is the floor.
  */
 export const MIN_GAP_DAYS = 2;
+
+/** Once resurfaced, a fact steps aside for this long to let others through. */
+export const RESURFACE_COOLDOWN_DAYS = 3;
 
 export const MAX_REPEATS = 2;
 
@@ -36,24 +50,47 @@ function lastSeenDate(row: FactPerformance): string | null {
   return row.last_seen_at ? today(new Date(row.last_seen_at)) : null;
 }
 
+export interface SelectOptions {
+  date?: string;
+  /** fact_key → the last date it appeared in a briefing. */
+  lastShown?: ReadonlyMap<string, string>;
+  limit?: number;
+}
+
 /**
- * Which facts to bring back today, most overdue and most-often-wrong first.
- * Returns at most `limit` fact keys, and an empty list when nothing is due.
+ * Which facts to bring back today. Returns at most `limit` keys, and an empty
+ * list when nothing is due.
+ *
+ * Ordering is rotation-first: whatever has waited longest since it was last
+ * shown goes next, so a backlog of wrong answers is worked through rather than
+ * the worst two being repeated indefinitely. How often it was missed breaks
+ * ties, so a fact wrong twice still outranks one wrong once when neither has
+ * been shown.
  */
 export function selectRepeats(
   performance: FactPerformance[],
-  date: string = today(),
-  limit: number = MAX_REPEATS,
+  { date = today(), lastShown = new Map(), limit = MAX_REPEATS }: SelectOptions = {},
 ): string[] {
   const due = performance
     .filter((row) => row.times_wrong > 0)
     .map((row) => {
       const seen = lastSeenDate(row);
-      return { row, elapsed: seen === null ? Infinity : daysBetween(seen, date) };
+      const shown = lastShown.get(row.fact_key);
+      return {
+        row,
+        elapsed: seen === null ? Infinity : daysBetween(seen, date),
+        sinceShown: shown === undefined ? Infinity : daysBetween(shown, date),
+      };
     })
-    .filter(({ row, elapsed }) => elapsed >= MIN_GAP_DAYS && elapsed >= intervalFor(row));
+    .filter(
+      ({ row, elapsed, sinceShown }) =>
+        elapsed >= MIN_GAP_DAYS &&
+        elapsed >= intervalFor(row) &&
+        sinceShown >= RESURFACE_COOLDOWN_DAYS,
+    );
 
   due.sort((a, b) => {
+    if (b.sinceShown !== a.sinceShown) return b.sinceShown - a.sinceShown;
     if (b.row.times_wrong !== a.row.times_wrong) {
       return b.row.times_wrong - a.row.times_wrong;
     }
@@ -64,17 +101,58 @@ export function selectRepeats(
   return due.slice(0, limit).map(({ row }) => row.fact_key);
 }
 
-/** The facts themselves, ready to render alongside the day's new ones. */
-export async function repeatsForUser(userId: string, date: string = today()): Promise<Fact[]> {
+/**
+ * Today's resurfaced facts for one person, ready to render.
+ *
+ * Get-or-create: the first caller of the day fixes the selection and records
+ * it, and everyone after gets the same answer. That is deliberate — the daily
+ * email and the website should agree about what "worth another look" means
+ * today, whichever the person opens first.
+ */
+export async function repeatsForUser(
+  userId: string,
+  date: string = today(),
+): Promise<Fact[]> {
   const db = createAdminClient();
 
-  const { data: performance, error } = await db
-    .from("pqb_fact_performance")
-    .select("*")
-    .eq("user_id", userId);
-  if (error) throw error;
+  const { data: alreadyChosen, error: chosenError } = await db
+    .from("pqb_resurfacings")
+    .select("fact_key")
+    .eq("user_id", userId)
+    .eq("shown_on", date);
+  if (chosenError) throw chosenError;
 
-  const keys = selectRepeats(performance ?? [], date);
+  let keys = (alreadyChosen ?? []).map((row) => row.fact_key);
+
+  if (keys.length === 0) {
+    const [{ data: performance, error }, { data: history, error: historyError }] =
+      await Promise.all([
+        db.from("pqb_fact_performance").select("*").eq("user_id", userId),
+        db
+          .from("pqb_resurfacings")
+          .select("fact_key, shown_on")
+          .eq("user_id", userId)
+          .order("shown_on", { ascending: false }),
+      ]);
+    if (error) throw error;
+    if (historyError) throw historyError;
+
+    const lastShown = new Map<string, string>();
+    for (const row of history ?? []) {
+      if (!lastShown.has(row.fact_key)) lastShown.set(row.fact_key, row.shown_on);
+    }
+
+    keys = selectRepeats(performance ?? [], { date, lastShown });
+
+    if (keys.length > 0) {
+      const { error: recordError } = await db.from("pqb_resurfacings").upsert(
+        keys.map((fact_key) => ({ user_id: userId, fact_key, shown_on: date })),
+        { onConflict: "user_id,fact_key,shown_on", ignoreDuplicates: true },
+      );
+      if (recordError) throw recordError;
+    }
+  }
+
   if (keys.length === 0) return [];
 
   const { data: facts, error: factsError } = await db

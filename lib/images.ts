@@ -153,12 +153,14 @@ function extensionFor(url: string): string {
  * Resolve an article's lead image and store it in Blob.
  *
  * `slug` becomes the stored filename, so regenerating a quiz overwrites rather
- * than accumulating copies.
+ * than accumulating copies. Facts and quizzes keep separate folders: a fact's
+ * picture outlives the quiz it might end up in.
  */
 export async function storeImage(
   articleTitle: string,
   slug: string,
   doFetch: FetchLike = fetch,
+  folder = "quiz-images",
 ): Promise<{ imagePath: string; imageCredit: string }> {
   const resolved = await resolveImage(articleTitle, doFetch);
 
@@ -173,7 +175,7 @@ export async function storeImage(
 
   const body = await response.arrayBuffer();
   const blob = await put(
-    `quiz-images/${slug}.${extensionFor(resolved.sourceUrl)}`,
+    `${folder}/${slug}.${extensionFor(resolved.sourceUrl)}`,
     Buffer.from(body),
     {
       access: "public",

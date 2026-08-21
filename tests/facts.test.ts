@@ -1,15 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { addDays, isFirstOfMonth, isMonday, monthKey, weekKey } from "@/lib/dates";
 import {
   FACTS_PER_DAY,
+  FACT_IMAGE_FOLDER,
   RESTING_TOPICS,
   TOPICS,
   assignFactKeys,
   factKey,
   slugify,
+  storeFactImages,
   topicsForDate,
 } from "@/lib/facts";
+import { ImageError } from "@/lib/images";
 
 const resting = (date: string) => TOPICS.filter((t) => !topicsForDate(date).includes(t));
 
@@ -130,5 +133,49 @@ describe("scheduling", () => {
 
   it("keys months plainly", () => {
     expect(monthKey("2026-08-10")).toBe("2026-08");
+  });
+});
+
+describe("storeFactImages", () => {
+  const facts = [
+    { fact_key: "a", title: "A", image_subject: "Stonehenge" },
+    { fact_key: "b", title: "B", image_subject: "Concorde" },
+  ];
+
+  function store(failing = new Set<string>()) {
+    return vi.fn(async (article: string) => {
+      if (failing.has(article)) throw new ImageError(`"${article}" has no lead image`);
+      return { imagePath: `https://blob/${article}.jpg`, imageCredit: "Wikipedia" };
+    });
+  }
+
+  it("files pictures under the fact's own key, apart from quiz images", async () => {
+    const stored = store();
+    await storeFactImages(facts, stored);
+
+    expect(stored).toHaveBeenCalledWith("Stonehenge", "a", expect.anything(), FACT_IMAGE_FOLDER);
+  });
+
+  it("publishes the rest of the briefing when one subject has no picture", async () => {
+    const images = await storeFactImages(facts, store(new Set(["Stonehenge"])));
+
+    expect(images.has("a")).toBe(false);
+    expect(images.get("b")?.imagePath).toBe("https://blob/Concorde.jpg");
+  });
+
+  it("does not go looking for a picture the fact never nominated", async () => {
+    const stored = store();
+    const images = await storeFactImages([{ ...facts[0], image_subject: "  " }], stored);
+
+    expect(stored).not.toHaveBeenCalled();
+    expect(images.size).toBe(0);
+  });
+
+  it("lets an unexpected failure through rather than quietly dropping pictures", async () => {
+    const stored = vi.fn(async () => {
+      throw new TypeError("blob store misconfigured");
+    });
+
+    await expect(storeFactImages(facts, stored)).rejects.toThrow(TypeError);
   });
 });

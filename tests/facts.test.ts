@@ -7,7 +7,9 @@ import {
   RESTING_TOPICS,
   TOPICS,
   assignFactKeys,
+  describePastFact,
   factKey,
+  rerunTitles,
   slugify,
   storeFactImages,
   topicsForDate,
@@ -110,6 +112,58 @@ describe("assignFactKeys", () => {
     const keys = assignFactKeys(Array(4).fill("Same title"), "2026-08-02");
 
     expect(new Set(keys).size).toBe(4);
+  });
+});
+
+describe("describePastFact", () => {
+  it("names the subject, which a cryptic title does not", () => {
+    // This title ran on 1 November and was rewritten on the 6th: nothing in it
+    // says Rubik's Cube, so the model could not tell it had been done.
+    expect(
+      describePastFact({
+        title: "The inventor could not solve it",
+        key_fact: "Ernő Rubik took a month to solve his own cube.",
+        image_subject: "Rubik's Cube",
+      }),
+    ).toBe("The inventor could not solve it (Rubik's Cube)");
+  });
+
+  it("falls back to the fact itself when there is no picture subject", () => {
+    const fact = {
+      title: "MPs cannot resign",
+      key_fact: "MPs leave by taking a nominal Crown office.",
+      image_subject: "  ",
+    };
+
+    expect(describePastFact(fact)).toBe(
+      "MPs cannot resign: MPs leave by taking a nominal Crown office.",
+    );
+    expect(describePastFact({ ...fact, image_subject: null })).toBe(describePastFact(fact));
+  });
+});
+
+describe("rerunTitles", () => {
+  const history = [
+    { title: "Swifts stay up for ten months", key_fact: "", image_subject: "Common swift" },
+    { title: "Marmite is a brewery by-product", key_fact: "", image_subject: "Marmite" },
+  ];
+
+  it("catches a title that has already run", () => {
+    expect(
+      rerunTitles(
+        [{ title: "Swifts stay up for ten months" }, { title: "Hippo sweat is red" }],
+        history,
+      ),
+    ).toEqual(["Swifts stay up for ten months"]);
+  });
+
+  it("ignores case and punctuation, which the model varies freely", () => {
+    expect(rerunTitles([{ title: "Marmite is a brewery by-product." }], history)).toHaveLength(1);
+    expect(rerunTitles([{ title: "MARMITE IS A BREWERY BY-PRODUCT" }], history)).toHaveLength(1);
+  });
+
+  it("lets a new fact about an old subject through", () => {
+    expect(rerunTitles([{ title: "Swifts sleep on the wing" }], history)).toEqual([]);
   });
 });
 

@@ -262,20 +262,69 @@ Return one entry for every fact, keeping the fact_key exactly as given.`,
   return new Map(subjects.map((s) => [s.fact_key, s.image_subject.trim()]));
 }
 
+/**
+ * How far back the avoid-list reaches.
+ *
+ * The model has a favourite repertoire of perhaps a few hundred facts and
+ * reaches for one the moment it drops off the list. With a three-week window
+ * (truncated further, in practice, to fifteen days by a row limit) facts came
+ * back after sixteen days like clockwork, and almost every day carried at
+ * least one rerun. A year is long enough that a repeat would feel like a
+ * deliberate revisit rather than the briefing running out of ideas.
+ */
+export const HISTORY_DAYS = 365;
+
+/** PostgREST caps a response at 1,000 rows, so history is read in pages. */
+const HISTORY_PAGE_SIZE = 1000;
+
+export interface PastFact {
+  title: string;
+  key_fact: string;
+  image_subject: string | null;
+}
+
+/**
+ * One line of the avoid-list.
+ *
+ * Titles alone are not enough: "The inventor could not solve it" does not say
+ * it was about the Rubik's Cube, so the model wrote it again five days later.
+ * The picture subject names the thing in a few words; where there isn't one,
+ * the fact itself does, at the cost of a longer line.
+ */
+export function describePastFact(fact: PastFact): string {
+  const subject = fact.image_subject?.trim();
+  return subject ? `${fact.title} (${subject})` : `${fact.title}: ${fact.key_fact}`;
+}
+
+/**
+ * Titles in a new briefing that have already run, word for word.
+ *
+ * A backstop, not the main defence — the avoid-list in the prompt does that,
+ * and catches rewordings this can't. But an exact repeat is unambiguous and
+ * cheap to check, and it is the version of the bug most obvious to a reader.
+ */
+export function rerunTitles(
+  generated: ReadonlyArray<{ title: string }>,
+  history: ReadonlyArray<PastFact>,
+): string[] {
+  const seen = new Set(history.map((fact) => slugify(fact.title)));
+  return generated.filter((fact) => seen.has(slugify(fact.title))).map((fact) => fact.title);
+}
+
 interface GenerateOptions {
   date: string;
   topics: Topic[];
-  /** Titles from the recent past, so subjects don't come round again. */
-  recentTitles: string[];
+  /** Everything published in the last HISTORY_DAYS, so none of it comes round again. */
+  history: PastFact[];
 }
 
 export async function generateFacts({
   date,
   topics,
-  recentTitles,
+  history,
 }: GenerateOptions): Promise<GeneratedFact[]> {
-  const avoid = recentTitles.length
-    ? `\n\nThese subjects have been covered in the last few weeks. Do not repeat them or anything closely overlapping:\n${recentTitles.map((t) => `- ${t}`).join("\n")}`
+  const avoid = history.length
+    ? `\n\nThese facts have already appeared in the briefing, each with its subject in brackets. Do not repeat any of them or retell one in other words. A different fact about the same subject is fine, but only if someone who read the earlier one would not feel they were reading it again:\n${history.map((fact) => `- ${describePastFact(fact)}`).join("\n")}`
     : "";
 
   const prompt = `Write the briefing for ${formatLong(date)}.
@@ -303,6 +352,12 @@ ${topics.map((t, i) => `${i + 1}. ${t}`).join("\n")}${avoid}`;
       if (thin) {
         throw new Error(`the story for "${thin.title}" is shorter than three sentences`);
       }
+      const reruns = rerunTitles(value.facts, history);
+      if (reruns.length) {
+        throw new Error(
+          `these have already appeared in the briefing: ${reruns.map((t) => `"${t}"`).join(", ")}. Replace them with facts that are not on the list`,
+        );
+      }
     },
   });
 
@@ -316,23 +371,36 @@ ${topics.map((t, i) => `${i + 1}. ${t}`).join("\n")}${avoid}`;
  * already populated — but the unique constraint on (publish_date, position)
  * would catch it anyway.
  */
+/** Every fact published in the HISTORY_DAYS before `date`, newest first. */
+async function factHistory(date: string): Promise<PastFact[]> {
+  const db = createAdminClient();
+  const history: PastFact[] = [];
+
+  for (let from = 0; ; from += HISTORY_PAGE_SIZE) {
+    const { data, error } = await db
+      .from("pqb_facts")
+      .select("title, key_fact, image_subject")
+      .gte("publish_date", addDays(date, -HISTORY_DAYS))
+      .lt("publish_date", date)
+      // (publish_date, position) is unique, so pages neither skip nor repeat rows.
+      .order("publish_date", { ascending: false })
+      .order("position")
+      .range(from, from + HISTORY_PAGE_SIZE - 1);
+    if (error) throw error;
+
+    history.push(...(data ?? []));
+    if (!data || data.length < HISTORY_PAGE_SIZE) return history;
+  }
+}
+
 export async function publishFacts(date: string): Promise<Fact[]> {
   const db = createAdminClient();
-
-  const { data: recent, error: recentError } = await db
-    .from("pqb_facts")
-    .select("title")
-    .gte("publish_date", addDays(date, -21))
-    .lt("publish_date", date)
-    .order("publish_date", { ascending: false })
-    .limit(120);
-  if (recentError) throw recentError;
 
   const topics = topicsForDate(date);
   const generated = await generateFacts({
     date,
     topics,
-    recentTitles: (recent ?? []).map((row) => row.title),
+    history: await factHistory(date),
   });
 
   const keys = assignFactKeys(
